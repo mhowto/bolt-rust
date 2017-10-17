@@ -1,22 +1,22 @@
 use bucket::Bucket;
 use types::pgid_t;
-use std::rc::Rc;
+use std::sync::Arc;
 
 // Node represents an in-memory, deserialized page.
 pub struct Node<'a> {
-    pub bucket: Rc<Bucket>,
+    pub bucket: Arc<Bucket<'a>>,
     pub is_leaf: bool,
     pub unbalanced: bool,
     pub spilled: bool,
     pub key: &'a[u8],
     pub pgid: pgid_t,
-    parent: Option<Rc<Node<'a>>>,
-    children: Vec<Rc<Node<'a>>>,
-    inodes: Vec<Rc<INode<'a>>>,
+    parent: Option<Arc<Node<'a>>>,
+    children: Vec<Arc<Node<'a>>>,
+    inodes: Vec<Arc<INode<'a>>>,
 }
 
 impl <'a> Node<'a> {
-    pub fn new(b: Rc<Bucket>) -> Node<'a> {
+    pub fn new(b: Arc<Bucket<'a>>) -> Node<'a> {
         Node{
             bucket: b,
             is_leaf: false,
@@ -30,14 +30,14 @@ impl <'a> Node<'a> {
         }
     }
 
-    fn root(&self) -> &Node {
+    pub fn root(&self) -> &Node {
         match self.parent {
             Some(ref p) => p.root(),
             None => self,
         }
     }
 
-    fn put(self, old_key: &[u8], new_key: &[u8], value: &[u8], pgid: pgid_t, flags: u32) {
+    pub fn put(self, old_key: &[u8], new_key: &[u8], value: &[u8], pgid: pgid_t, flags: u32) {
         if pgid > self.bucket.tx.meta.pgid {
             panic!("pgid {} above high water mark {}", pgid, self.bucket.tx.meta.pgid)
         } else if old_key.len() <= 0 {
@@ -48,7 +48,7 @@ impl <'a> Node<'a> {
 
         // Find insertion index
         let r = self.inodes.binary_search_by(|&inode_rc| {
-            let inode_r = Rc::try_unwrap(inode_rc);
+            let inode_r = Arc::try_unwrap(inode_rc);
             match inode_r {
                 Ok(inode) => inode.key.cmp(old_key),
                 Err(err) => panic!("inode rc empty")
@@ -56,10 +56,10 @@ impl <'a> Node<'a> {
         });
 
         match r {
-            Ok(index) => { self.inodes.insert(index, Rc::new(INode::new())); },
+            Ok(index) => { self.inodes.insert(index, Arc::new(INode::new())); },
             Err(index) =>  {
                 // Add capacity and shift nodes if we don't have an exact match and need to insert.
-                let inode = Rc::get_mut(&mut self.inodes[index]).unwrap();
+                let inode = Arc::get_mut(&mut self.inodes[index]).unwrap();
                 inode.flags = flags;
                 inode.key = new_key;
                 inode.value = value;
