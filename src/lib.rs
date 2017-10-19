@@ -32,12 +32,13 @@ mod tests {
 
     #[test]
     fn it_works() {
-        let mut node = Node::new(Rc::new(Bucket::new(Box::new(_Bucket {
-                                                          root: 0,
-                                                          sequence: 0,
-                                                      }),
-                                                      Rc::new(Tx { meta: Meta::new() }),
-                                                      None)));
+        let mut node = Node::new(
+            Rc::downgrade(
+                &Rc::new(
+                    Bucket::new(
+                        Box::new(_Bucket{root: 0, sequence: 0,}),
+                        Box::new(Tx{meta: Meta::new()}),
+                    ))));
         node.put("baz".as_bytes(), "baz".as_bytes(), "2".as_bytes(), 0, 0);
         node.put("foo".as_bytes(), "foo".as_bytes(), "0".as_bytes(), 0, 0);
         node.put("bar".as_bytes(), "bar".as_bytes(), "1".as_bytes(), 0, 0);

@@ -1,6 +1,7 @@
 use bucket::Bucket;
 use types::pgid_t;
 use std::rc::{Weak, Rc};
+use std::cell::RefCell;
 use page;
 
 // Node represents an in-memory, deserialized page.
@@ -87,7 +88,11 @@ impl<'a> Node<'a> {
     }
 
     pub fn append_child(&mut self, child: Node<'a>) {
-        self.children.append(&child);
+        self.children.push(child);
+    }
+
+    pub fn set_parent(&mut self, p: &Node<'a>) {
+        self.parent = Rc::downgrade(&Rc::new(*p));
     }
 
 /*
@@ -105,10 +110,11 @@ impl<'a> Node<'a> {
                value: &'a [u8],
                pgid: pgid_t,
                flags: u32) {
-        if pgid > self.bucket.tx.meta.pgid {
+        let meta_pgid = self.bucket.upgrade().unwrap().as_ref().tx.meta.pgid;
+        if pgid > meta_pgid {
             panic!("pgid {} above high water mark {}",
                    pgid,
-                   self.bucket.tx.meta.pgid)
+                   meta_pgid)
         } else if old_key.len() <= 0 {
             panic!("put: zero-length old key")
         } else if new_key.len() <= 0 {
