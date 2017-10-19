@@ -37,6 +37,21 @@ impl<'a> Node<'a> {
         }
     }
 
+    pub fn min_keys(self) -> i32 {
+        if self.is_leaf {
+            1
+        } else {
+            2
+        }
+    }
+
+    // size returns the size of the node after serialization
+    /*
+    pub fn size() ->isize {
+
+    }
+    */
+
     pub fn put(&mut self,
                old_key: &[u8],
                new_key: &'a [u8],
