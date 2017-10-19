@@ -1,16 +1,16 @@
 use types::pgid_t;
 use tx::Tx;
 use node::Node;
-use std::sync::Arc;
+use std::rc::Rc;
 use std::collections::HashMap;
 
 // Bucket represents a collection of key/value pairs inside the datasbase.
 pub struct Bucket<'a> {
     pub bucket: Box<_Bucket>,
-    pub tx: Arc<Tx>, // the associated transcation
+    pub tx: Rc<Tx>, // the associated transcation
     buckets: HashMap<&'static str, Bucket<'a>>, // subbucket cache
     // page: &'b Page, // inline page reference
-    root_node: Option<Arc<Node<'a>>>, // materialized node for the root page.
+    root_node: Option<Rc<Node<'a>>>, // materialized node for the root page.
     nodes: HashMap<pgid_t, Node<'a>>, // node cache
 
     // Sets the threshold for filling nodes when they split. By default,
@@ -22,7 +22,7 @@ pub struct Bucket<'a> {
 }
 
 impl<'a> Bucket<'a> {
-    pub fn new(b: Box<_Bucket>, tx: Arc<Tx>, root: Option<Arc<Node<'a>>>) -> Bucket<'a> {
+    pub fn new(b: Box<_Bucket>, tx: Rc<Tx>, root: Option<Rc<Node<'a>>>) -> Bucket<'a> {
         Bucket {
             bucket: b,
             tx: tx,
@@ -32,6 +32,31 @@ impl<'a> Bucket<'a> {
             fill_percent: 0.0,
         }
     }
+
+    pub fn get_node(&self, pgid: pgid_t, parent: Option<&Node>) -> &Node {
+        // Retrieve node if it's already been created.
+        if let Some(n) = self.nodes.get(pgid) {
+            return &n
+        }
+
+        // Otherwise create a node and cache it.
+        let n = &mut Node::new(Bucket::new(self));
+        match parent {
+            None => {
+                self.root_node = n;
+            }
+            Some(p) => {
+                n.append_child(n);
+                n.parent = parent;
+            }
+        }
+
+        // use the inline page if this is an inline bucket.
+
+        // Read the page into the node and cache it.
+
+        // Update statistics
+    } 
 }
 
 // _Bucket represents the on-file representation of a bucket.

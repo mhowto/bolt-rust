@@ -4,14 +4,14 @@ use std::slice;
 
 // pub const PageHeaderSize: isize = intrusive_collections::offset_of!(page, ptr);
 //pub const PageHeaderSize: isize = offset_of!(page, ptr); 
-pub static mut PAGE_HEADER_SIZE: isize = 0;
+pub static mut PAGE_HEADER_SIZE: usize = 0;
 pub const MIN_KEY_PER_PAGE: i32 = 2;
 pub const BRANCH_PAGE_ELEMENT_SIZE: usize = mem::size_of::<BranchPageElement>();
 pub const LEAF_PAGE_ELEMENT_SIZE: usize = mem::size_of::<LeafPageElement>();
 
 pub fn initialize() {
     unsafe {
-        PAGE_HEADER_SIZE = offset_of!(Page, ptr);
+        PAGE_HEADER_SIZE = offset_of!(Page, ptr) as usize;
     }
 }
 
@@ -41,8 +41,8 @@ impl <'a> BranchPageElement {
         }
     }
 
-    pub fn get_body_pointer(self) -> *const u8 {
-        let ptr: *const u8 = &self as *const BranchPageElement as *const u8;
+    pub fn get_body_pointer(&self) -> *const u8 {
+        let ptr: *const u8 = self as *const BranchPageElement as *const u8;
         unsafe { ptr.offset(self.pos as isize) }
     }
 }
@@ -73,8 +73,8 @@ impl <'a> LeafPageElement {
         }
     }
 
-    pub fn get_body_pointer(self) -> *const u8 {
-        let ptr: *const u8 = &self as *const LeafPageElement as *const u8;
+    pub fn get_body_pointer(&self) -> *const u8 {
+        let ptr: *const u8 = self as *const LeafPageElement as *const u8;
         unsafe { ptr.offset(self.pos as isize) }
     }
 }
@@ -84,6 +84,7 @@ mod tests {
     use page;
     use std::mem;
     use std::ptr;
+    use types::pgid_t;
 
     #[test]
     fn offset_of_works() {
@@ -93,6 +94,34 @@ mod tests {
         }
         assert_eq!(page::BRANCH_PAGE_ELEMENT_SIZE, 16);
         assert_eq!(page::LEAF_PAGE_ELEMENT_SIZE, 16);
+    }
+
+       #[test]
+    fn branch_page_element_dump() {
+        #[repr(C,packed)]
+        struct _BranchPageElement {
+            pub pos: u32,
+            pub ksize: u32,
+            pub pgid: pgid_t,
+            pub key: [u8; 4],
+        }
+        let mut ele = _BranchPageElement{
+            pos: 16,
+            ksize: 4,
+            pgid: 0,
+            key: [0; 4],
+        };
+        let key = "weep";
+        let mut key_pointer = &mut ele as *mut _BranchPageElement as *mut u8;
+        unsafe {
+            key_pointer = key_pointer.offset(ele.pos as isize);
+            ptr::copy(key.as_ptr(), key_pointer, key.len());
+
+            let branch_page_element: *const page::BranchPageElement = &ele as *const _BranchPageElement as *const page::BranchPageElement;
+            assert_eq!((*branch_page_element).pos, ele.pos);
+            assert_eq!((*branch_page_element).ksize, ele.ksize);
+            assert_eq!((*branch_page_element).key(), key.as_bytes());
+        }
     }
 
     #[test]

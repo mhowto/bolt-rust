@@ -22,7 +22,7 @@ mod page;
 #[cfg(test)]
 mod tests {
     use node::Node;
-    use std::sync::Arc;
+    use std::rc::Rc;
     use bucket::Bucket;
     use bucket::_Bucket;
     use tx::Tx;
@@ -32,11 +32,11 @@ mod tests {
 
     #[test]
     fn it_works() {
-        let mut node = Node::new(Arc::new(Bucket::new(Box::new(_Bucket {
+        let mut node = Node::new(Rc::new(Bucket::new(Box::new(_Bucket {
                                                           root: 0,
                                                           sequence: 0,
                                                       }),
-                                                      Arc::new(Tx { meta: Meta::new() }),
+                                                      Rc::new(Tx { meta: Meta::new() }),
                                                       None)));
         node.put("baz".as_bytes(), "baz".as_bytes(), "2".as_bytes(), 0, 0);
         node.put("foo".as_bytes(), "foo".as_bytes(), "0".as_bytes(), 0, 0);
@@ -44,16 +44,16 @@ mod tests {
         node.put("foo".as_bytes(), "foo".as_bytes(), "3".as_bytes(), 0, 0x02);
 
         assert_eq!(node.inodes.len(), 3);
+        page::initialize();
+        assert_eq!(node.size(), 16 + 3*(16 + 4)); 
 
         {
-
             let inode = &node.inodes[0];
             assert_eq!(str::from_utf8(inode.key).unwrap(), "bar");
             assert_eq!(str::from_utf8(inode.value).unwrap(), "1");
         }
 
         {
-
             let inode = &node.inodes[1];
             assert_eq!(str::from_utf8(inode.key).unwrap(), "baz");
             assert_eq!(str::from_utf8(inode.value).unwrap(), "2");

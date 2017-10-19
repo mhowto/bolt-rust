@@ -1,22 +1,23 @@
 use bucket::Bucket;
 use types::pgid_t;
-use std::sync::Arc;
+use std::rc::{Weak, Rc};
+use page;
 
 // Node represents an in-memory, deserialized page.
 pub struct Node<'a> {
-    pub bucket: Arc<Bucket<'a>>,
+    pub bucket: Weak<Bucket<'a>>,
     pub is_leaf: bool,
     pub unbalanced: bool,
     pub spilled: bool,
     pub key: &'a [u8],
     pub pgid: pgid_t,
-    parent: Option<Arc<Node<'a>>>,
+    parent: Weak<Node<'a>>,
     children: Vec<Node<'a>>,
     pub inodes: Vec<INode<'a>>,
 }
 
 impl<'a> Node<'a> {
-    pub fn new(b: Arc<Bucket<'a>>) -> Node<'a> {
+    pub fn new(b: Weak<Bucket<'a>>) -> Node<'a> {
         Node {
             bucket: b,
             is_leaf: false,
@@ -24,16 +25,17 @@ impl<'a> Node<'a> {
             spilled: false,
             key: "".as_bytes(),
             pgid: 0,
-            parent: None,
+            parent: Weak::new(),
             children: Vec::new(),
             inodes: Vec::new(),
         }
     }
 
     pub fn root(&self) -> &Node {
-        match self.parent {
-            Some(ref p) => p.root(),
-            None => self,
+        if let Some(p) = self.parent.upgrade() {
+            p.as_ref().root()
+        } else {
+            self
         }
     }
 
@@ -46,9 +48,54 @@ impl<'a> Node<'a> {
     }
 
     // size returns the size of the node after serialization
-    /*
-    pub fn size() ->isize {
+    pub fn size(&self) -> usize {
+        let mut sz: usize = 0;
+        unsafe {
+            sz = page::PAGE_HEADER_SIZE;
+        }
+        let elsz = self.page_element_size();
+        for inode in &self.inodes {
+            sz += elsz + inode.key.len() + inode.value.len();
+        }
+        sz
+    }
 
+    // returns true if the node is less than a given size.
+    // This is an optimization to avoid calculating a large node when we only need
+    // to know if it fits inside a certain page size.
+    fn size_less_than(&self, v: usize) -> bool {
+        let mut sz: usize = 0;
+        unsafe {
+            sz = page::PAGE_HEADER_SIZE;
+        }
+        let elsz = self.page_element_size();
+        for inode in &self.inodes {
+            sz += elsz + inode.key.len() + inode.value.len();
+            if sz >= v {
+                return false
+            }
+        }
+        true
+    }
+
+    fn page_element_size(&self) -> usize {
+        if self.is_leaf {
+            page::LEAF_PAGE_ELEMENT_SIZE
+        } else {
+            page::BRANCH_PAGE_ELEMENT_SIZE
+        }
+    }
+
+    pub fn append_child(&mut self, child: Node<'a>) {
+        self.children.append(&child);
+    }
+
+/*
+    pub fn child_at(&self, index: isize) -> &Node {
+        if self.is_leaf {
+            panic!("invalid child_at{} on a leaf node", index);
+        }
+        self.bucket.bucket.
     }
     */
 
@@ -92,6 +139,7 @@ impl<'a> Node<'a> {
 // INode represents an internal node inside of a node.
 // It can be used to point to elements in a page or point
 // to an element which hasn't been added to a page yet.
+#[repr(C,packed)]
 pub struct INode<'a> {
     pub flags: u32,
     pub pgid: pgid_t,
