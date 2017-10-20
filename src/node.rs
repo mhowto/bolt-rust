@@ -12,9 +12,9 @@ pub struct Node<'a> {
     pub spilled: bool,
     pub key: &'a [u8],
     pub pgid: pgid_t,
-    pub parent: Option<Rc<Node<'a>>>,
+    pub parent: Option<&'a Node<'a>>,
     pub inodes: Vec<INode<'a>>,
-    children: RefCell<Vec<Weak<Node<'a>>>>,
+    children: Vec<Node<'a>>,
 }
 
 impl<'a> Node<'a> {
@@ -27,18 +27,16 @@ impl<'a> Node<'a> {
             key: "".as_bytes(),
             pgid: 0,
             parent: None,
-            children: RefCell::new(vec![]),
+            children: Vec::new(),
             inodes: Vec::new(),
         }
     }
 
-    pub fn root(&self) -> Rc<Node<'a>> {
+    pub fn root(&self) -> &Node<'a> {
         if let Some(ref p) = self.parent {
-            p.as_ref().root()
+            p.root()
         } else {
-            unsafe {
-                Rc::from_raw(self as *const Node)
-            }
+            self
         }
     }
 
