@@ -12,7 +12,7 @@ pub struct Bucket<'a> {
     buckets: HashMap<&'static str, Bucket<'a>>, // subbucket cache
     page: Option<Rc<Page>>, // inline page reference
     pub root_node: Option<Rc<Node<'a>>>, // materialized node for the root page.
-    nodes: HashMap<pgid_t, Node<'a>>, // node cache
+    nodes: HashMap<pgid_t, Rc<Node<'a>>>, // node cache
 
     // Sets the threshold for filling nodes when they split. By default,
     // the bucket will fill to 50% but it can be useful to increase this
@@ -35,33 +35,37 @@ impl<'a> Bucket<'a> {
         }
     }
 
-    pub fn get_node(&self, pgid: pgid_t, parent: Option<&Node<'a>>) -> &Node<'a> {
+    // node creates a node from a page and associates it with a given parent.
+    pub fn node(&mut self, pgid: pgid_t, parent: Option<&Node<'a>>) -> Rc<Node<'a>> {
         // Retrieve node if it's already been created.
         if let Some(n) = self.nodes.get(&pgid) {
-            return &n
+            return Rc::clone(&n)
         }
 
         // Otherwise create a node and cache it.
-        let n = &mut Node::new(Rc::downgrade(&Rc::new(*self)));
-        if parent.is_none() {
-            self.root_node = Some(Rc::new(*n));
-        } else {
-            let p = parent.unwrap();
-            p.append_child(*n);
-            n.set_parent(p);
-        }
-
+        unsafe {
+            let n = Rc::new(Node::new(Rc::from_raw(self as *mut Bucket)));
+            if parent.is_none() {
+                self.root_node = Some(Rc::clone(&n));
+            } else {
+                let p = parent.unwrap();
+                // p.append_child(*n);
+                // n.set_parent(p);
+            }
         // use the inline page if this is an inline bucket.
+        /*
         let mut p = self.page;
         if p.is_none() {
             p = Some(Rc::new(self.tx.as_ref().page(pgid).unwrap()));
         }
+        */
 
         // Read the page into the node and cache it.
 
         // Update statistics
 
         n
+        }
     } 
 }
 

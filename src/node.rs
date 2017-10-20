@@ -6,19 +6,19 @@ use page;
 
 // Node represents an in-memory, deserialized page.
 pub struct Node<'a> {
-    pub bucket: Weak<Bucket<'a>>,
+    pub bucket: Rc<Bucket<'a>>,
     pub is_leaf: bool,
     pub unbalanced: bool,
     pub spilled: bool,
     pub key: &'a [u8],
     pub pgid: pgid_t,
-    parent: Weak<Node<'a>>,
-    children: Vec<Node<'a>>,
+    pub parent: Option<Rc<Node<'a>>>,
     pub inodes: Vec<INode<'a>>,
+    children: RefCell<Vec<Weak<Node<'a>>>>,
 }
 
 impl<'a> Node<'a> {
-    pub fn new(b: Weak<Bucket<'a>>) -> Node<'a> {
+    pub fn new(b: Rc<Bucket<'a>>) -> Node<'a> {
         Node {
             bucket: b,
             is_leaf: false,
@@ -26,17 +26,19 @@ impl<'a> Node<'a> {
             spilled: false,
             key: "".as_bytes(),
             pgid: 0,
-            parent: Weak::new(),
-            children: Vec::new(),
+            parent: None,
+            children: RefCell::new(vec![]),
             inodes: Vec::new(),
         }
     }
 
-    pub fn root(&self) -> &Node {
-        if let Some(p) = self.parent.upgrade() {
+    pub fn root(&self) -> Rc<Node<'a>> {
+        if let Some(ref p) = self.parent {
             p.as_ref().root()
         } else {
-            self
+            unsafe {
+                Rc::from_raw(self as *const Node)
+            }
         }
     }
 
@@ -87,6 +89,7 @@ impl<'a> Node<'a> {
         }
     }
 
+/*
     pub fn append_child(&mut self, child: Node<'a>) {
         self.children.push(child);
     }
@@ -94,6 +97,7 @@ impl<'a> Node<'a> {
     pub fn set_parent(&mut self, p: &Node<'a>) {
         self.parent = Rc::downgrade(&Rc::new(*p));
     }
+    */
 
 /*
     pub fn child_at(&self, index: isize) -> &Node {
@@ -110,7 +114,7 @@ impl<'a> Node<'a> {
                value: &'a [u8],
                pgid: pgid_t,
                flags: u32) {
-        let meta_pgid = self.bucket.upgrade().unwrap().as_ref().tx.meta.pgid;
+        let meta_pgid = self.bucket.as_ref().tx.meta.pgid;
         if pgid > meta_pgid {
             panic!("pgid {} above high water mark {}",
                    pgid,
