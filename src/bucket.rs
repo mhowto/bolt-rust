@@ -12,8 +12,8 @@ pub struct Bucket<'a> {
     pub tx: Box<Tx>, // the associated transcation
     buckets: HashMap<&'static str, Bucket<'a>>, // subbucket cache
     page: Option<Rc<Page>>, // inline page reference
-    pub root_node: Option<Rc<Node<'a>>>, // materialized node for the root page.
-    nodes: HashMap<pgid_t, Rc<Node<'a>>>, // node cache
+    pub root_node: Option<Rc<RefCell<Node<'a>>>>, // materialized node for the root page.
+    pub nodes: HashMap<pgid_t, Rc<RefCell<Node<'a>>>>, // node cache
 
     // Sets the threshold for filling nodes when they split. By default,
     // the bucket will fill to 50% but it can be useful to increase this
@@ -37,39 +37,46 @@ impl<'a> Bucket<'a> {
     }
 
     // node creates a node from a page and associates it with a given parent.
-    pub fn node(&mut self, pgid: pgid_t, parent: Option<Rc<RefCell<Node<'a>>>>) -> Rc<Node<'a>> {
+    pub fn node(
+        &mut self,
+        pgid: pgid_t,
+        parent: Option<Rc<RefCell<Node<'a>>>>,
+        bucket: &Rc<RefCell<Bucket<'a>>>,
+    ) -> Rc<RefCell<Node<'a>>> {
         // Retrieve node if it's already been created.
         if let Some(n) = self.nodes.get(&pgid) {
             return Rc::clone(&n)
         }
 
         // Otherwise create a node and cache it.
-        unsafe {
-            let n = Rc::new(Node::new(Rc::from_raw(self as *mut Bucket)));
+            // let n = Rc::new(Node::new(Rc::from_raw(self as *mut Bucket)));
+            let n = Rc::new(RefCell::new(
+                Node::new(Rc::clone(bucket))));
+                // RefCell::new(*self)))));
+                //  as *mut Bucket))));
             
             if let Some(ref p) = parent {
                 {
-                    let parent_node = p.borrow_mut();
+                    let mut parent_node = p.borrow_mut();
                     parent_node.append_child(&n);
                 }
-                n.set_parent(Rc::clone(p.borrow()));
+                n.borrow_mut().set_parent(&Rc::clone(p));
             } else {
                 self.root_node = Some(Rc::clone(&n));
             }
-        // use the inline page if this is an inline bucket.
-        /*
-        let mut p = self.page;
-        if p.is_none() {
-            p = Some(Rc::new(self.tx.as_ref().page(pgid).unwrap()));
-        }
-        */
+            // use the inline page if this is an inline bucket.
+            let p = &mut self.page;
+            if p.is_none() {
+                *p = Some(Rc::new(self.tx.as_ref().page(pgid).unwrap()));
+            }
 
-        // Read the page into the node and cache it.
+            // Read the page into the node and cache it.
+            // n.read(p);
+            self.nodes.insert(pgid, Rc::clone(&n));
 
-        // Update statistics
+            // Update statistics
 
-        n
-        }
+            n
     } 
 }
 

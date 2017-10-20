@@ -6,19 +6,19 @@ use page;
 
 // Node represents an in-memory, deserialized page.
 pub struct Node<'a> {
-    pub bucket: Rc<Bucket<'a>>,
+    pub bucket: Rc<RefCell<Bucket<'a>>>,
     pub is_leaf: bool,
     pub unbalanced: bool,
     pub spilled: bool,
     pub key: &'a [u8],
     pub pgid: pgid_t,
-    pub parent: Option<Rc<Node<'a>>>,
+    pub parent: Option<Rc<RefCell<Node<'a>>>>,
     pub inodes: Vec<INode<'a>>,
-    children: RefCell<Vec<Weak<Node<'a>>>>,
+    children: RefCell<Vec<Weak<RefCell<Node<'a>>>>>,
 }
 
 impl<'a> Node<'a> {
-    pub fn new(b: Rc<Bucket<'a>>) -> Node<'a> {
+    pub fn new(b: Rc<RefCell<Bucket<'a>>>) -> Node<'a> {
         Node {
             bucket: b,
             is_leaf: false,
@@ -32,11 +32,15 @@ impl<'a> Node<'a> {
         }
     }
 
-    pub fn root(&self) -> Rc<Node<'a>> {
+    fn to_rc_refcell_node(&self) -> Rc<RefCell<Node<'a>>> {
+        Rc::clone(self.bucket.borrow().nodes.get(&(self.pgid)).unwrap())
+    }
+
+    pub fn root(&self) -> Rc<RefCell<Node<'a>>>{
         if let Some(ref p) = self.parent {
-            p.root()
+            p.borrow().root()
         } else {
-            unsafe {Rc::from_raw(self as *const Node)}
+            self.to_rc_refcell_node()
         }
     }
 
@@ -87,23 +91,25 @@ impl<'a> Node<'a> {
         }
     }
 
-    pub fn append_child(&mut self, child: &Rc<Node<'a>>) {
+    pub fn append_child(&mut self, child: &Rc<RefCell<Node<'a>>>) {
         let mut children = self.children.borrow_mut();
         children.push(Rc::downgrade(child));
     }
 
-    pub fn set_parent(&mut self, p: &Rc<Node<'a>>) {
+    pub fn set_parent(&mut self, p: &Rc<RefCell<Node<'a>>>) {
         self.parent = Some(Rc::clone(p));
     }
 
-/*
-    pub fn child_at(&self, index: isize) -> &Node {
+    pub fn child_at(&self, index: usize) -> Rc<RefCell<Node<'a>>> {
         if self.is_leaf {
             panic!("invalid child_at{} on a leaf node", index);
         }
-        self.bucket.bucket.
+        self.bucket.borrow_mut().node(
+            self.inodes[index].pgid, 
+            Some(self.to_rc_refcell_node()),
+            &self.bucket,
+        )
     }
-    */
 
     pub fn put(&mut self,
                old_key: &[u8],
@@ -111,7 +117,7 @@ impl<'a> Node<'a> {
                value: &'a [u8],
                pgid: pgid_t,
                flags: u32) {
-        let meta_pgid = self.bucket.as_ref().tx.meta.pgid;
+        let meta_pgid = self.bucket.borrow().tx.meta.pgid;
         if pgid > meta_pgid {
             panic!("pgid {} above high water mark {}",
                    pgid,
