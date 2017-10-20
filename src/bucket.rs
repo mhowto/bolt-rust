@@ -2,6 +2,7 @@ use types::pgid_t;
 use tx::Tx;
 use node::Node;
 use std::rc::Rc;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use page::Page;
 
@@ -36,7 +37,7 @@ impl<'a> Bucket<'a> {
     }
 
     // node creates a node from a page and associates it with a given parent.
-    pub fn node(&mut self, pgid: pgid_t, parent: Option<&Node<'a>>) -> Rc<Node<'a>> {
+    pub fn node(&mut self, pgid: pgid_t, parent: Option<Rc<RefCell<Node<'a>>>>) -> Rc<Node<'a>> {
         // Retrieve node if it's already been created.
         if let Some(n) = self.nodes.get(&pgid) {
             return Rc::clone(&n)
@@ -45,12 +46,15 @@ impl<'a> Bucket<'a> {
         // Otherwise create a node and cache it.
         unsafe {
             let n = Rc::new(Node::new(Rc::from_raw(self as *mut Bucket)));
-            if parent.is_none() {
-                self.root_node = Some(Rc::clone(&n));
+            
+            if let Some(ref p) = parent {
+                {
+                    let parent_node = p.borrow_mut();
+                    parent_node.append_child(&n);
+                }
+                n.set_parent(Rc::clone(p.borrow()));
             } else {
-                let p = parent.unwrap();
-                // p.append_child(*n);
-                // n.set_parent(p);
+                self.root_node = Some(Rc::clone(&n));
             }
         // use the inline page if this is an inline bucket.
         /*

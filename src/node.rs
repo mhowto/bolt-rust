@@ -12,9 +12,9 @@ pub struct Node<'a> {
     pub spilled: bool,
     pub key: &'a [u8],
     pub pgid: pgid_t,
-    pub parent: Option<&'a Node<'a>>,
+    pub parent: Option<Rc<Node<'a>>>,
     pub inodes: Vec<INode<'a>>,
-    children: Vec<Node<'a>>,
+    children: RefCell<Vec<Weak<Node<'a>>>>,
 }
 
 impl<'a> Node<'a> {
@@ -27,16 +27,16 @@ impl<'a> Node<'a> {
             key: "".as_bytes(),
             pgid: 0,
             parent: None,
-            children: Vec::new(),
+            children: RefCell::new(vec![]),
             inodes: Vec::new(),
         }
     }
 
-    pub fn root(&self) -> &Node<'a> {
+    pub fn root(&self) -> Rc<Node<'a>> {
         if let Some(ref p) = self.parent {
             p.root()
         } else {
-            self
+            unsafe {Rc::from_raw(self as *const Node)}
         }
     }
 
@@ -87,15 +87,14 @@ impl<'a> Node<'a> {
         }
     }
 
-/*
-    pub fn append_child(&mut self, child: Node<'a>) {
-        self.children.push(child);
+    pub fn append_child(&mut self, child: &Rc<Node<'a>>) {
+        let mut children = self.children.borrow_mut();
+        children.push(Rc::downgrade(child));
     }
 
-    pub fn set_parent(&mut self, p: &Node<'a>) {
-        self.parent = Rc::downgrade(&Rc::new(*p));
+    pub fn set_parent(&mut self, p: &Rc<Node<'a>>) {
+        self.parent = Some(Rc::clone(p));
     }
-    */
 
 /*
     pub fn child_at(&self, index: isize) -> &Node {
