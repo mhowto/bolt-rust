@@ -1,9 +1,19 @@
 use types::pgid_t;
 use std::mem;
 use std::slice;
+use std::fmt;
+use meta::Meta;
+
+pub const MAX_PAGE_SIZE: usize = 0x7FFFFFF;
+pub const MAX_ALLOC_SIZE: usize = 0x7FFFFFFF;
+
+pub const BRANCH_PAGE_FLAG: u16 = 0x01;
+pub const LEAF_PAGE_FLAG: u16 = 0x02;
+pub const META_PAGE_FLAG: u16 = 0x04;
+pub const FREELIST_PAGE_FLAG: u16 = 0x10;
 
 // pub const PageHeaderSize: isize = intrusive_collections::offset_of!(page, ptr);
-//pub const PageHeaderSize: isize = offset_of!(page, ptr); 
+//pub const PageHeaderSize: isize = offset_of!(page, ptr);
 pub static mut PAGE_HEADER_SIZE: usize = 0;
 pub const MIN_KEY_PER_PAGE: i32 = 2;
 pub const BRANCH_PAGE_ELEMENT_SIZE: usize = mem::size_of::<BranchPageElement>();
@@ -15,7 +25,7 @@ pub fn initialize() {
     }
 }
 
-#[repr(C,packed)]
+#[repr(C, packed)]
 pub struct Page {
     pub id: pgid_t,
     pub flags: u16,
@@ -24,20 +34,84 @@ pub struct Page {
     pub ptr: usize,
 }
 
+impl <'a> Page {
+    pub fn typ(&self) -> String {
+        if (self.flags & BRANCH_PAGE_FLAG) != 0 {
+            return "branch".to_string()
+        } else if (self.flags & LEAF_PAGE_FLAG) != 0 {
+            return "leaf".to_string()
+        } else if (self.flags & META_PAGE_FLAG) != 0 {
+            return "meta".to_string()
+        } else if (self.flags & FREELIST_PAGE_FLAG) != 0 {
+            return "freelist".to_string()
+        }
+        fmt::format(format_args!("unknown{}", self.flags))
+    }
+
+    pub fn meta(&self) -> *const Meta{
+        let ptr: *const u8 = self as *const Page as *const u8;
+        unsafe {
+            ptr.offset(self.ptr as isize) as *const Meta
+        }
+    }
+
+    pub fn leaf_page_element(&self, index: u16) -> *const LeafPageElement {
+        let ptr: *const u8 = self as *const Page as *const u8;
+        unsafe {
+            let leaf_ptr = ptr.offset(self.ptr as isize) as *const LeafPageElement;
+            leaf_ptr.offset(index as isize)
+        }
+    }
+
+    pub fn leaf_page_elements(&self) -> &'a [LeafPageElement] {
+        let ptr: *const u8 = self as *const Page as *const u8;
+        unsafe {
+            let leaf_ptr = ptr.offset(self.ptr as isize) as *const LeafPageElement;
+            return slice::from_raw_parts(leaf_ptr, MAX_PAGE_SIZE)
+        }
+    }
+
+    pub fn branch_page_element(&self, index: u16) -> *const BranchPageElement {
+        let ptr: *const u8 = self as *const Page as *const u8;
+        unsafe {
+            let leaf_ptr = ptr.offset(self.ptr as isize) as *const BranchPageElement;
+            leaf_ptr.offset(index as isize)
+        }
+    }
+
+    pub fn branch_page_elements(&self) -> &'a [BranchPageElement] {
+        let ptr: *const u8 = self as *const Page as *const u8;
+        unsafe {
+            let leaf_ptr = ptr.offset(self.ptr as isize) as *const BranchPageElement;
+            return slice::from_raw_parts(leaf_ptr, MAX_PAGE_SIZE)
+        }
+    }
+
+    // writes n bytes of the page to STDERR as hex output.
+    pub fn hexdump(&self, n: i32) {
+        let ptr: *const u8 = self as *const Page as *const u8;
+        unsafe {
+            let buf = slice::from_raw_parts(ptr, MAX_ALLOC_SIZE);
+            // TODO: fmt string to [u8] as binary
+            eprintln!("{:?}", buf);
+        }
+    }
+}
+
 // represents a node on a branch page.
-#[repr(C,packed)]
+#[repr(C, packed)]
 pub struct BranchPageElement {
     pub pos: u32,
     pub ksize: u32,
     pub pgid: pgid_t,
 }
 
-impl <'a> BranchPageElement {
+impl<'a> BranchPageElement {
     pub fn key(&self) -> &'a [u8] {
         let ptr: *const u8 = self as *const BranchPageElement as *const u8;
-        unsafe { 
+        unsafe {
             let start: *const u8 = ptr.offset(self.pos as isize);
-            return slice::from_raw_parts(start, self.ksize as usize)
+            return slice::from_raw_parts(start, self.ksize as usize);
         }
     }
 
@@ -48,7 +122,7 @@ impl <'a> BranchPageElement {
 }
 
 // represents a node on a leaf page.
-#[repr(C,packed)]
+#[repr(C, packed)]
 pub struct LeafPageElement {
     pub flags: u32,
     pub pos: u32,
@@ -56,7 +130,7 @@ pub struct LeafPageElement {
     pub vsize: u32,
 }
 
-impl <'a> LeafPageElement {
+impl<'a> LeafPageElement {
     pub fn key(&self) -> &'a [u8] {
         let ptr: *const u8 = self as *const LeafPageElement as *const u8;
         unsafe {
@@ -96,16 +170,16 @@ mod tests {
         assert_eq!(page::LEAF_PAGE_ELEMENT_SIZE, 16);
     }
 
-       #[test]
+    #[test]
     fn branch_page_element_dump() {
-        #[repr(C,packed)]
+        #[repr(C, packed)]
         struct _BranchPageElement {
             pub pos: u32,
             pub ksize: u32,
             pub pgid: pgid_t,
             pub key: [u8; 4],
         }
-        let mut ele = _BranchPageElement{
+        let mut ele = _BranchPageElement {
             pos: 16,
             ksize: 4,
             pgid: 0,
@@ -117,7 +191,8 @@ mod tests {
             key_pointer = key_pointer.offset(ele.pos as isize);
             ptr::copy(key.as_ptr(), key_pointer, key.len());
 
-            let branch_page_element: *const page::BranchPageElement = &ele as *const _BranchPageElement as *const page::BranchPageElement;
+            let branch_page_element: *const page::BranchPageElement =
+                &ele as *const _BranchPageElement as *const page::BranchPageElement;
             assert_eq!((*branch_page_element).pos, ele.pos);
             assert_eq!((*branch_page_element).ksize, ele.ksize);
             assert_eq!((*branch_page_element).key(), key.as_bytes());
@@ -126,7 +201,7 @@ mod tests {
 
     #[test]
     fn leaf_page_element_dump() {
-        #[repr(C,packed)]
+        #[repr(C, packed)]
         struct _LeafPageElement {
             pub flags: u32,
             pub pos: u32,
@@ -136,7 +211,7 @@ mod tests {
             pub value: [u8; 17],
         }
         assert_eq!(mem::size_of::<_LeafPageElement>(), 37);
-        let mut ele = _LeafPageElement{
+        let mut ele = _LeafPageElement {
             flags: 0x04,
             pos: 16,
             ksize: 4,
@@ -153,7 +228,8 @@ mod tests {
             let value_pointer = key_pointer.offset(ele.ksize as isize);
             ptr::copy(value.as_ptr(), value_pointer, value.len());
 
-            let leaf_page_element: *const page::LeafPageElement = &ele as *const _LeafPageElement as *const page::LeafPageElement;
+            let leaf_page_element: *const page::LeafPageElement =
+                &ele as *const _LeafPageElement as *const page::LeafPageElement;
             assert_eq!((*leaf_page_element).flags, ele.flags);
             assert_eq!((*leaf_page_element).pos, ele.pos);
             assert_eq!((*leaf_page_element).ksize, ele.ksize);
@@ -161,9 +237,8 @@ mod tests {
             assert_eq!((*leaf_page_element).key(), key.as_bytes());
             assert_eq!((*leaf_page_element).value(), value.as_bytes());
             // if let Some(leaf) = leaf_page_element.as_ref() {
-                // assert_eq!(leaf.key(), key.as_bytes());
+            // assert_eq!(leaf.key(), key.as_bytes());
             // }
         }
     }
 }
-

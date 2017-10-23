@@ -1,6 +1,6 @@
-#![feature(const_fn,const_size_of)]
+#![feature(const_fn, const_size_of)]
 
-// Re-export core for use by macros                                                                                                                                                                                                                                                                                                                                    
+// Re-export core for use by macros
 #[doc(hidden)]
 pub extern crate core as __core;
 
@@ -16,6 +16,7 @@ mod types;
 mod tx;
 mod db;
 mod page;
+mod meta;
 
 // extern crate core as __core;
 
@@ -33,11 +34,13 @@ mod tests {
 
     #[test]
     fn it_works() {
-        let bucket: Rc<RefCell<Bucket>> = Rc::new(RefCell::new(
-            Bucket::new(
-                        Box::new(_Bucket{root: 0, sequence: 0,}),
-                        Box::new(Tx{meta: Meta::new()}),
-            )));
+        let bucket: Rc<RefCell<Bucket>> = Rc::new(RefCell::new(Bucket::new(
+            Box::new(_Bucket {
+                root: 0,
+                sequence: 0,
+            }),
+            Box::new(Tx { meta: Meta::new() }),
+        )));
         let mut node = Node::new(Rc::clone(&bucket));
         node.put("baz".as_bytes(), "baz".as_bytes(), "2".as_bytes(), 0, 0);
         node.put("foo".as_bytes(), "foo".as_bytes(), "0".as_bytes(), 0, 0);
@@ -46,7 +49,7 @@ mod tests {
 
         assert_eq!(node.inodes.len(), 3);
         page::initialize();
-        assert_eq!(node.size(), 16 + 3*(16 + 4)); 
+        assert_eq!(node.size(), 16 + 3 * (16 + 4));
 
         {
             let inode = &node.inodes[0];
