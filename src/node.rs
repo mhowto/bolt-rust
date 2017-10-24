@@ -258,6 +258,7 @@ impl<'a> Node<'a> {
         if self.inodes.len() >= 0xFFFF {
             panic!("inode overflow: {} (pgid={})", self.inodes.len(), p.id);
         }
+        p.count = self.inodes.len() as u16;
 
         // Stop here if there are no items to write
         if p.count == 0 {
@@ -265,11 +266,9 @@ impl<'a> Node<'a> {
         }
 
         // Loop over each item and write it to the page.
-        let mut b: *mut u8 = 0 as *mut u8;
+        let mut b: *mut u8 = unsafe{ &mut p.ptr as *mut usize as *mut u8};
         unsafe {
-            let ptr = p as *mut page::Page as *mut u8;
-            b = ptr.offset(p.ptr as isize +
-                self.inodes.len() as isize * self.page_element_size() as isize);
+            b = b.offset(self.inodes.len() as isize * self.page_element_size() as isize);
         }
 
         for (i, item) in self.inodes.iter().enumerate() {
@@ -292,7 +291,7 @@ impl<'a> Node<'a> {
                     (*elem).pos = b as u32 - elem as u32;
                     (*elem).ksize = item.key.len() as u32;
                     (*elem).pgid = item.pgid;
-                    assert!((*elem).pgid != p.id, "write: circular dependency occurred")
+                    assert_ne!((*elem).pgid, p.id, "write: circular dependency occurred");
                 }
             }
 
@@ -449,7 +448,51 @@ mod tests {
         assert_eq!(n.inodes[1].value, "bye".as_bytes());
     }
 
-#[test]
-fn node_write_leaf_page() {
-}
+    #[test]
+    fn node_write_leaf_page() {
+        let mut tx = Tx{meta: Meta::new()};
+        tx.meta.pgid = 1;
+
+        let bucket = Bucket::new(
+            Box::new(_Bucket{
+                root: 0,
+                sequence: 0,
+            }),
+            Box::new(tx),
+        );
+
+        let mut n = Node::new(Rc::new(RefCell::new(bucket)));
+        n.is_leaf = true;
+        n.put("susy".as_bytes(), "susy".as_bytes(), "que".as_bytes(), 0, 0);
+        n.put("ricki".as_bytes(), "ricki".as_bytes(), "lake".as_bytes(), 0, 0);
+        n.put("john".as_bytes(), "john".as_bytes(), "johnson".as_bytes(), 0, 0);
+
+        // write it to a page
+        let mut buf: [u8; 4096] = [0; 4096];
+        let mut page: *mut page::Page = buf.as_mut_ptr() as *mut page::Page;
+
+        unsafe { n.write(page.as_mut().unwrap()); };
+
+        // Read the page back in
+        let mut n2 = Node::new(Rc::new(RefCell::new(Bucket::new(
+            Box::new(_Bucket {
+                root: 0,
+                sequence: 0,
+            }),
+            Box::new(Tx { meta: Meta::new() }),
+        ))));
+        unsafe { n2.read(page.as_mut().unwrap()); }
+
+        // Check that the two pages are the same.
+        assert_eq!(n2.inodes.len(), 3);
+
+        assert_eq!(n2.inodes[0].key, "john".as_bytes());
+        assert_eq!(n2.inodes[0].value, "johnson".as_bytes());
+
+        assert_eq!(n2.inodes[1].key, "ricki".as_bytes());
+        assert_eq!(n2.inodes[1].value, "lake".as_bytes());
+
+        assert_eq!(n2.inodes[2].key, "susy".as_bytes());
+        assert_eq!(n2.inodes[2].value, "que".as_bytes());
+    }
 }
