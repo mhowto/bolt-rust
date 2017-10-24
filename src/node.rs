@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use page;
 use std::slice;
 use std::ptr;
+use std::str;
 
 // Node represents an in-memory, deserialized page.
 pub struct Node<'a> {
@@ -12,7 +13,7 @@ pub struct Node<'a> {
     pub is_leaf: bool,
     pub unbalanced: bool,
     pub spilled: bool,
-    pub key: &'a [u8],
+    pub key: &'a str,
     pub pgid: pgid_t,
     pub parent: Option<Rc<RefCell<Node<'a>>>>,
     pub inodes: Vec<INode<'a>>,
@@ -26,7 +27,7 @@ impl<'a> Node<'a> {
             is_leaf: false,
             unbalanced: false,
             spilled: false,
-            key: "".as_bytes(),
+            key: "",
             pgid: 0,
             parent: None,
             children: RefCell::new(vec![]),
@@ -113,7 +114,7 @@ impl<'a> Node<'a> {
         )
     }
 
-    fn find_key_index(&self, key: &'a [u8]) -> usize {
+    fn find_key_index(&self, key: &'a str) -> usize {
         let r = self.inodes.binary_search_by(|ref inode| inode.key.cmp(key));
         match r {
             Ok(idx) => idx,
@@ -158,9 +159,9 @@ impl<'a> Node<'a> {
 
     pub fn put(
         &mut self,
-        old_key: &[u8],
-        new_key: &'a [u8],
-        value: &'a [u8],
+        old_key: &'a str,
+        new_key: &'a str,
+        value: &'a str,
         pgid: pgid_t,
         flags: u32,
     ) {
@@ -194,7 +195,7 @@ impl<'a> Node<'a> {
         assert!(inode.key.len() > 0, "put: zero-length inode key");
     }
 
-    pub fn del(&mut self, key: &'a [u8]) {
+    pub fn del(&mut self, key: &'a str) {
         let r = self.inodes.binary_search_by(|ref inode| inode.key.cmp(key));
         // Exit if the key isn't found.
         if r.is_err() {
@@ -220,8 +221,8 @@ impl<'a> Node<'a> {
                     self.inodes.push(INode {
                         flags: (*elem).flags,
                         pgid: 0,
-                        key: (*elem).key(),
-                        value: (*elem).value(),
+                        key:  str::from_utf8((*elem).key()).unwrap(),
+                        value: str::from_utf8((*elem).value()).unwrap(),
                     });
                 }
             } else {
@@ -230,8 +231,8 @@ impl<'a> Node<'a> {
                     self.inodes.push(INode {
                         flags: 0,
                         pgid: (*elem).pgid,
-                        key: (*elem).key(),
-                        value: "".as_bytes(),
+                        key: str::from_utf8((*elem).key()).unwrap(),
+                        value: "",
                     })
                 }
             }
@@ -243,7 +244,7 @@ impl<'a> Node<'a> {
             self.key = self.inodes[0].key;
             assert!(self.key.len() > 0, "read: zero-length node key")
         } else {
-            self.key = "".as_bytes();
+            self.key = "";
         }
     }
 
@@ -321,8 +322,8 @@ impl<'a> Node<'a> {
 pub struct INode<'a> {
     pub flags: u32,
     pub pgid: pgid_t,
-    pub key: &'a [u8],
-    pub value: &'a [u8],
+    pub key: &'a str,
+    pub value: &'a str,
 }
 
 impl<'a> INode<'a> {
@@ -330,8 +331,8 @@ impl<'a> INode<'a> {
         INode {
             flags: 0,
             pgid: 0,
-            key: "".as_bytes(),
-            value: "".as_bytes(),
+            key: "",
+            value: "",
         }
     }
 }
@@ -358,10 +359,10 @@ mod tests {
             Box::new(Tx { meta: Meta::new() }),
         )));
         let mut node = Node::new(Rc::clone(&bucket));
-        node.put("baz".as_bytes(), "baz".as_bytes(), "2".as_bytes(), 0, 0);
-        node.put("foo".as_bytes(), "foo".as_bytes(), "0".as_bytes(), 0, 0);
-        node.put("bar".as_bytes(), "bar".as_bytes(), "1".as_bytes(), 0, 0);
-        node.put("foo".as_bytes(), "foo".as_bytes(), "3".as_bytes(), 0, 0x02);
+        node.put("baz", "baz", "2", 0, 0);
+        node.put("foo", "foo", "0", 0, 0);
+        node.put("bar", "bar", "1", 0, 0);
+        node.put("foo", "foo", "3", 0, 0x02);
 
         assert_eq!(node.inodes.len(), 3);
         page::initialize();
@@ -369,20 +370,20 @@ mod tests {
 
         {
             let inode = &node.inodes[0];
-            assert_eq!(str::from_utf8(inode.key).unwrap(), "bar");
-            assert_eq!(str::from_utf8(inode.value).unwrap(), "1");
+            assert_eq!(inode.key, "bar");
+            assert_eq!(inode.value, "1");
         }
 
         {
             let inode = &node.inodes[1];
-            assert_eq!(str::from_utf8(inode.key).unwrap(), "baz");
-            assert_eq!(str::from_utf8(inode.value).unwrap(), "2");
+            assert_eq!(inode.key, "baz");
+            assert_eq!(inode.value, "2");
         }
 
         {
             let inode = &node.inodes[2];
-            assert_eq!(str::from_utf8(inode.key).unwrap(), "foo");
-            assert_eq!(str::from_utf8(inode.value).unwrap(), "3");
+            assert_eq!(inode.key, "foo");
+            assert_eq!(inode.value, "3");
         }
 
         {
@@ -442,10 +443,10 @@ mod tests {
         // Check that there are two inodes with correct data.
         assert!(n.is_leaf, "expected leaf");
         assert_eq!(n.inodes.len(), 2);
-        assert_eq!(n.inodes[0].key, "bar".as_bytes());
-        assert_eq!(n.inodes[0].value, "fooz".as_bytes());
-        assert_eq!(n.inodes[1].key, "helloworld".as_bytes());
-        assert_eq!(n.inodes[1].value, "bye".as_bytes());
+        assert_eq!(n.inodes[0].key, "bar");
+        assert_eq!(n.inodes[0].value, "fooz");
+        assert_eq!(n.inodes[1].key, "helloworld");
+        assert_eq!(n.inodes[1].value, "bye");
     }
 
     #[test]
@@ -463,9 +464,9 @@ mod tests {
 
         let mut n = Node::new(Rc::new(RefCell::new(bucket)));
         n.is_leaf = true;
-        n.put("susy".as_bytes(), "susy".as_bytes(), "que".as_bytes(), 0, 0);
-        n.put("ricki".as_bytes(), "ricki".as_bytes(), "lake".as_bytes(), 0, 0);
-        n.put("john".as_bytes(), "john".as_bytes(), "johnson".as_bytes(), 0, 0);
+        n.put("susy", "susy", "que", 0, 0);
+        n.put("ricki", "ricki", "lake", 0, 0);
+        n.put("john", "john", "johnson", 0, 0);
 
         // write it to a page
         let mut buf: [u8; 4096] = [0; 4096];
@@ -486,13 +487,13 @@ mod tests {
         // Check that the two pages are the same.
         assert_eq!(n2.inodes.len(), 3);
 
-        assert_eq!(n2.inodes[0].key, "john".as_bytes());
-        assert_eq!(n2.inodes[0].value, "johnson".as_bytes());
+        assert_eq!(n2.inodes[0].key, "john");
+        assert_eq!(n2.inodes[0].value, "johnson");
 
-        assert_eq!(n2.inodes[1].key, "ricki".as_bytes());
-        assert_eq!(n2.inodes[1].value, "lake".as_bytes());
+        assert_eq!(n2.inodes[1].key, "ricki");
+        assert_eq!(n2.inodes[1].value, "lake");
 
-        assert_eq!(n2.inodes[2].key, "susy".as_bytes());
-        assert_eq!(n2.inodes[2].value, "que".as_bytes());
+        assert_eq!(n2.inodes[2].key, "susy");
+        assert_eq!(n2.inodes[2].value, "que");
     }
 }
