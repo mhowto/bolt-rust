@@ -4,6 +4,7 @@
 #[doc(hidden)]
 pub extern crate core as __core;
 
+
 #[macro_use]
 mod macros;
 // #[macro_use]
@@ -20,6 +21,7 @@ mod meta;
 
 // extern crate core as __core;
 
+/*
 #[cfg(test)]
 mod tests {
     use node::Node;
@@ -74,3 +76,4 @@ mod tests {
         }
     }
 }
+*/

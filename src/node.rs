@@ -310,8 +310,6 @@ impl<'a> Node<'a> {
                 ptr::copy(item.value.as_ptr(), b, vlen);
                 b = b.offset(vlen as isize);
             }
-
-
         }
         // DEBUG ONLY: n.dump()
     }
@@ -337,4 +335,121 @@ impl<'a> INode<'a> {
             value: "".as_bytes(),
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use node::Node;
+    use std::rc::Rc;
+    use std::cell::RefCell;
+    use bucket::{Bucket, _Bucket};
+    use tx::Tx;
+    use db::Meta;
+    use std::str;
+    use page;
+    use std::ptr;
+
+    #[test]
+    fn node_put() {
+        let bucket: Rc<RefCell<Bucket>> = Rc::new(RefCell::new(Bucket::new(
+            Box::new(_Bucket {
+                root: 0,
+                sequence: 0,
+            }),
+            Box::new(Tx { meta: Meta::new() }),
+        )));
+        let mut node = Node::new(Rc::clone(&bucket));
+        node.put("baz".as_bytes(), "baz".as_bytes(), "2".as_bytes(), 0, 0);
+        node.put("foo".as_bytes(), "foo".as_bytes(), "0".as_bytes(), 0, 0);
+        node.put("bar".as_bytes(), "bar".as_bytes(), "1".as_bytes(), 0, 0);
+        node.put("foo".as_bytes(), "foo".as_bytes(), "3".as_bytes(), 0, 0x02);
+
+        assert_eq!(node.inodes.len(), 3);
+        page::initialize();
+        assert_eq!(node.size(), 16 + 3 * (16 + 4));
+
+        {
+            let inode = &node.inodes[0];
+            assert_eq!(str::from_utf8(inode.key).unwrap(), "bar");
+            assert_eq!(str::from_utf8(inode.value).unwrap(), "1");
+        }
+
+        {
+            let inode = &node.inodes[1];
+            assert_eq!(str::from_utf8(inode.key).unwrap(), "baz");
+            assert_eq!(str::from_utf8(inode.value).unwrap(), "2");
+        }
+
+        {
+            let inode = &node.inodes[2];
+            assert_eq!(str::from_utf8(inode.key).unwrap(), "foo");
+            assert_eq!(str::from_utf8(inode.value).unwrap(), "3");
+        }
+
+        {
+            assert_eq!(node.inodes[2].flags, 0x02);
+        }
+    }
+
+    #[test]
+    fn node_read_leaf_page() {
+        page::initialize();
+        // Create a page
+        let mut buf: [u8; 4096] = [0; 4096];
+        let mut page: *mut page::Page = buf.as_mut_ptr() as *mut page::Page;
+        unsafe {
+            (*page).flags = page::LEAF_PAGE_FLAG;
+            (*page).count = 2;
+        }
+
+        // Insert 2 elements at the beginning.
+        let nodes_start_ptr: *mut page::LeafPageElement = unsafe { &mut (*page).ptr as *mut usize as *mut page::LeafPageElement };
+        unsafe {
+            *nodes_start_ptr = page::LeafPageElement {
+                flags: 0,
+                //                pos: 32,
+                pos: page::LEAF_PAGE_ELEMENT_SIZE as u32 * 2,
+                ksize: 3,
+                vsize: 4,
+            };
+            *nodes_start_ptr.offset(1) = page::LeafPageElement {
+                flags: 0,
+                //pos: 23,
+                pos: page::LEAF_PAGE_ELEMENT_SIZE as u32 + 3 + 4,
+                ksize: 10,
+                vsize: 3,
+            };
+        }
+
+        // Write data for the nodes at the end.
+        let data_ptr: *mut u8 = unsafe { nodes_start_ptr.offset(2) as *mut u8 };
+        unsafe {
+            let key = "barfooz";
+            ptr::copy(key.as_ptr(), data_ptr, key.len());
+            let value = "helloworldbye";
+            ptr::copy(value.as_ptr(), data_ptr.offset(key.len() as isize), value.len());
+        }
+
+        // Deserialize page into a leaf.
+        let mut n = Node::new(Rc::new(RefCell::new(Bucket::new(
+            Box::new(_Bucket {
+                root: 0,
+                sequence: 0,
+            }),
+            Box::new(Tx { meta: Meta::new() }),
+        ))));
+        unsafe { n.read(page.as_mut().unwrap()); }
+
+        // Check that there are two inodes with correct data.
+        assert!(n.is_leaf, "expected leaf");
+        assert_eq!(n.inodes.len(), 2);
+        assert_eq!(n.inodes[0].key, "bar".as_bytes());
+        assert_eq!(n.inodes[0].value, "fooz".as_bytes());
+        assert_eq!(n.inodes[1].key, "helloworld".as_bytes());
+        assert_eq!(n.inodes[1].value, "bye".as_bytes());
+    }
+
+#[test]
+fn node_write_leaf_page() {
+}
 }

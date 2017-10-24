@@ -49,40 +49,34 @@ impl <'a> Page {
     }
 
     pub fn meta(&self) -> *const Meta{
-        let ptr: *const u8 = self as *const Page as *const u8;
-        unsafe {
-            ptr.offset(self.ptr as isize) as *const Meta
-        }
+        &self.ptr as *const usize as *const Meta
     }
 
     pub fn leaf_page_element(&self, index: u16) -> *const LeafPageElement {
-        let ptr: *const u8 = self as *const Page as *const u8;
         unsafe {
-            let leaf_ptr = ptr.offset(self.ptr as isize) as *const LeafPageElement;
+            let leaf_ptr = &self.ptr as *const usize as *const LeafPageElement;
             leaf_ptr.offset(index as isize)
         }
     }
 
     pub fn leaf_page_elements(&self) -> &'a [LeafPageElement] {
-        let ptr: *const u8 = self as *const Page as *const u8;
+//        let ptr: *const u8 = self as *const Page as *const u8;
         unsafe {
-            let leaf_ptr = ptr.offset(self.ptr as isize) as *const LeafPageElement;
+            let leaf_ptr = &self.ptr as *const usize as *const LeafPageElement;
             return slice::from_raw_parts(leaf_ptr, MAX_PAGE_SIZE)
         }
     }
 
     pub fn branch_page_element(&self, index: u16) -> *const BranchPageElement {
-        let ptr: *const u8 = self as *const Page as *const u8;
         unsafe {
-            let leaf_ptr = ptr.offset(self.ptr as isize) as *const BranchPageElement;
+            let leaf_ptr = &self.ptr as *const usize as *const BranchPageElement;
             leaf_ptr.offset(index as isize)
         }
     }
 
     pub fn branch_page_elements(&self) -> &'a [BranchPageElement] {
-        let ptr: *const u8 = self as *const Page as *const u8;
         unsafe {
-            let leaf_ptr = ptr.offset(self.ptr as isize) as *const BranchPageElement;
+            let leaf_ptr = &self.ptr as *const usize as *const BranchPageElement;
             return slice::from_raw_parts(leaf_ptr, MAX_PAGE_SIZE)
         }
     }
