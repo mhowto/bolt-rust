@@ -3,6 +3,7 @@ use std::mem;
 use std::slice;
 use std::fmt;
 use meta::Meta;
+use std::sync::{Once, ONCE_INIT};
 
 pub const MAX_PAGE_SIZE: usize = 0x7FFFFFF;
 pub const MAX_ALLOC_SIZE: usize = 0x7FFFFFFF;
@@ -14,14 +15,26 @@ pub const FREELIST_PAGE_FLAG: u16 = 0x10;
 
 // pub const PageHeaderSize: isize = intrusive_collections::offset_of!(page, ptr);
 //pub const PageHeaderSize: isize = offset_of!(page, ptr);
-pub static mut PAGE_HEADER_SIZE: usize = 0;
-pub const MIN_KEY_PER_PAGE: i32 = 2;
+pub const MIN_KEYS_PER_PAGE: i32 = 2;
 pub const BRANCH_PAGE_ELEMENT_SIZE: usize = mem::size_of::<BranchPageElement>();
 pub const LEAF_PAGE_ELEMENT_SIZE: usize = mem::size_of::<LeafPageElement>();
 
-pub fn initialize() {
+
+static mut PAGE_HEADER_SIZE: usize = 0;
+static INIT: Once = ONCE_INIT;
+
+// Accessing a `static mut` is unsafe much of the time, but if we do so
+// in a synchronized fashion (e.g. write once or read all) then we're
+// good to go!
+//
+// This function will only call `expensive_computation` once, and will
+// otherwise always return the value returned from the first invocation.
+pub fn get_page_header_size() -> usize {
     unsafe {
-        PAGE_HEADER_SIZE = offset_of!(Page, ptr) as usize;
+        INIT.call_once(|| {
+            PAGE_HEADER_SIZE = offset_of!(Page, ptr) as usize;
+        });
+        PAGE_HEADER_SIZE
     }
 }
 
@@ -156,9 +169,8 @@ mod tests {
 
     #[test]
     fn offset_of_works() {
-        page::initialize();
         unsafe {
-            assert_eq!(page::PAGE_HEADER_SIZE, 16);
+            assert_eq!(page::get_page_header_size(), 16);
         }
         assert_eq!(page::BRANCH_PAGE_ELEMENT_SIZE, 16);
         assert_eq!(page::LEAF_PAGE_ELEMENT_SIZE, 16);

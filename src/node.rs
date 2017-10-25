@@ -1,3 +1,4 @@
+use bucket;
 use bucket::Bucket;
 use types::pgid_t;
 use std::rc::{Rc, Weak};
@@ -59,7 +60,7 @@ impl<'a> Node<'a> {
     pub fn size(&self) -> usize {
         let mut sz: usize = 0;
         unsafe {
-            sz = page::PAGE_HEADER_SIZE;
+            sz = page::get_page_header_size();
         }
         let elsz = self.page_element_size();
         for inode in &self.inodes {
@@ -74,7 +75,7 @@ impl<'a> Node<'a> {
     fn size_less_than(&self, v: usize) -> bool {
         let mut sz: usize = 0;
         unsafe {
-            sz = page::PAGE_HEADER_SIZE;
+            sz = page::get_page_header_size();
         }
         let elsz = self.page_element_size();
         for inode in &self.inodes {
@@ -165,7 +166,9 @@ impl<'a> Node<'a> {
         pgid: pgid_t,
         flags: u32,
     ) {
-        let meta_pgid = self.bucket.borrow().tx.meta.pgid;
+        let bucket_borrow = self.bucket.borrow();
+        let tx_borrow = bucket_borrow.tx.borrow();
+        let meta_pgid = tx_borrow.meta.pgid;
         if pgid > meta_pgid {
             panic!("pgid {} above high water mark {}", pgid, meta_pgid)
         } else if old_key.len() <= 0 {
@@ -313,6 +316,93 @@ impl<'a> Node<'a> {
         }
         // DEBUG ONLY: n.dump()
     }
+
+    // split_two breaks up a node into two smaller nodes, if appropriate.
+    // This should only be called from the split() function.
+    fn split_two(&mut self, page_size: usize) -> Option<Rc<RefCell<Node<'a>>>> {
+        // Ignore the split if the page doesn't have at least enough nodes for
+        // two pages or if the nodes can fit in a single pages.
+        if self.inodes.len() < page::MIN_KEYS_PER_PAGE as usize * 2 || self.size_less_than(page_size) {
+            return None
+        }
+
+        // Determine the threshold before starting a new node
+        let mut fill_percent = self.bucket.borrow().fill_percent;
+        if fill_percent < bucket::MIN_FILL_PERCENT {
+            fill_percent = bucket::MIN_FILL_PERCENT;
+        } else if fill_percent > bucket::MAX_FILL_PERCENT {
+            fill_percent = bucket::MAX_FILL_PERCENT;
+        }
+        let threshold = (fill_percent * page_size as f32) as usize;
+
+        // Determine split position and sizes of the two pages.
+        let (split_index, _) = self.split_index(threshold);
+
+        // Split node into two separate nodes.
+        // If there's no parent then we'll need to create one.
+        if self.parent.is_none() {
+            let node =  Rc::new(RefCell::new(Node::new(Rc::clone(&self.bucket))));
+            let node_refmut = node.borrow_mut();
+            let mut children = node_refmut.children.borrow_mut();
+            children.push(Rc::downgrade(&self.to_rc_refcell_node()));
+            self.parent = Some(Rc::clone(&node));
+        }
+
+        let next = Rc::new(RefCell::new(Node {
+            bucket: Rc::clone(&self.bucket),
+            is_leaf: self.is_leaf,
+            unbalanced: false,
+            spilled: false,
+            key: "",
+            pgid: 0,
+            parent: None,
+            inodes: self.inodes.split_off(split_index), // Split inodes across two nodes.
+            children: RefCell::new(Vec::new()),
+        }));
+        // Create a new node and add it to the parent.
+        match self.parent {
+            None => panic!("node should have parent"),
+            Some(ref p) => {
+                next.borrow_mut().parent = Some(Rc::clone(&p));
+                let p_refmut = p.borrow_mut();
+                let mut children_refmut = p_refmut.children.borrow_mut();
+                children_refmut.push(Rc::downgrade(&next));
+            },
+        }
+
+        // Update the statistics.
+        // TODO; add stats to bucket
+        let bucket_borrow = self.bucket.borrow_mut();
+        let mut tx_borrow = bucket_borrow.tx.borrow_mut();
+        tx_borrow.stats.split += 1;
+
+        return Some(Rc::clone(&next))
+    }
+
+    // split_index finds the position where a page will fill a given threshold.
+    // It returns the index as well as the size of the first page.
+    // This is only be called from split().
+    fn split_index(&self, threshold: usize) -> (usize, usize) {
+        let mut sz = page::get_page_header_size();
+
+        let mut index: usize = 0;
+        // Loop until we only have the minimum number of keys required for the second page.
+        for i in 0 .. self.inodes.len() - page::MIN_KEYS_PER_PAGE as usize{
+            index = i;
+            let inode = &self.inodes[i];
+            let elsize = self.page_element_size() + inode.key.len() + inode.value.len();
+
+            // If we have at least the minimum number of keys and adding another
+            // node would put us over the threshold then exit and return.
+            if i > page::MIN_KEYS_PER_PAGE as usize && sz + elsize > threshold {
+                break;
+            }
+
+            // Add the element size to the total size.else
+            sz += elsize;
+        }
+        (index, sz)
+    }
 }
 
 // INode represents an internal node inside of a node.
@@ -356,7 +446,7 @@ mod tests {
                 root: 0,
                 sequence: 0,
             }),
-            Box::new(Tx { meta: Meta::new() }),
+            Rc::new(RefCell::new(Tx::new())),
         )));
         let mut node = Node::new(Rc::clone(&bucket));
         node.put("baz", "baz", "2", 0, 0);
@@ -365,7 +455,6 @@ mod tests {
         node.put("foo", "foo", "3", 0, 0x02);
 
         assert_eq!(node.inodes.len(), 3);
-        page::initialize();
         assert_eq!(node.size(), 16 + 3 * (16 + 4));
 
         {
@@ -393,7 +482,6 @@ mod tests {
 
     #[test]
     fn node_read_leaf_page() {
-        page::initialize();
         // Create a page
         let mut buf: [u8; 4096] = [0; 4096];
         let mut page: *mut page::Page = buf.as_mut_ptr() as *mut page::Page;
@@ -436,7 +524,7 @@ mod tests {
                 root: 0,
                 sequence: 0,
             }),
-            Box::new(Tx { meta: Meta::new() }),
+            Rc::new(RefCell::new(Tx::new())),
         ))));
         unsafe { n.read(page.as_mut().unwrap()); }
 
@@ -451,7 +539,7 @@ mod tests {
 
     #[test]
     fn node_write_leaf_page() {
-        let mut tx = Tx{meta: Meta::new()};
+        let mut tx = Tx::new();
         tx.meta.pgid = 1;
 
         let bucket = Bucket::new(
@@ -459,7 +547,7 @@ mod tests {
                 root: 0,
                 sequence: 0,
             }),
-            Box::new(tx),
+            Rc::new(RefCell::new(tx)),
         );
 
         let mut n = Node::new(Rc::new(RefCell::new(bucket)));
@@ -480,7 +568,7 @@ mod tests {
                 root: 0,
                 sequence: 0,
             }),
-            Box::new(Tx { meta: Meta::new() }),
+            Rc::new(RefCell::new(Tx::new())),
         ))));
         unsafe { n2.read(page.as_mut().unwrap()); }
 

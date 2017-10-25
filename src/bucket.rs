@@ -6,10 +6,22 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use page::Page;
 
+// MAX_KEY_SIZE is the maximum length of a key, in bytes
+pub const MAX_KEY_SIZE: u32 = 32768;
+// MAX_VALUE_SIZE is the maximum length of a value, in bytes
+pub const MAX_VALUE_SIZE: u32 = (1 << 31) - 2;
+
+pub const MIN_FILL_PERCENT: f32 = 0.1;
+pub const MAX_FILL_PERCENT: f32 = 1.0;
+
+// DefaultFillPercent is the percentage that split pages are filled.
+// This value can be changed by setting Bucket.FillPercent.
+pub const DEFAULT_FILL_PERCENT: f32 = 0.5;
+
 // Bucket represents a collection of key/value pairs inside the datasbase.
 pub struct Bucket<'a> {
     pub bucket: Box<_Bucket>,
-    pub tx: Box<Tx>,                                   // the associated transcation
+    pub tx: Rc<RefCell<Tx>>,                                   // the associated transcation
     buckets: HashMap<&'static str, Bucket<'a>>,        // subbucket cache
     page: Option<Rc<Page>>,                            // inline page reference
     pub root_node: Option<Rc<RefCell<Node<'a>>>>,      // materialized node for the root page.
@@ -20,11 +32,11 @@ pub struct Bucket<'a> {
     // amount if you know that your write workloads are mostly append-only.
     //
     // This is non-persisted across transactions so it must be set in every Tx.
-    fill_percent: f64,
+    pub fill_percent: f32,
 }
 
 impl<'a> Bucket<'a> {
-    pub fn new(b: Box<_Bucket>, tx: Box<Tx>) -> Bucket<'a> {
+    pub fn new(b: Box<_Bucket>, tx: Rc<RefCell<Tx>>) -> Bucket<'a> {
         Bucket {
             bucket: b,
             tx: tx,
@@ -61,7 +73,7 @@ impl<'a> Bucket<'a> {
         // use the inline page if this is an inline bucket.
         let p = &mut self.page;
         if p.is_none() {
-            *p = Some(Rc::new(self.tx.as_ref().page(pgid).unwrap()));
+            *p = Some(Rc::new(self.tx.borrow().page(pgid).unwrap()));
         }
 
         // Read the page into the node and cache it.
@@ -71,6 +83,10 @@ impl<'a> Bucket<'a> {
         // Update statistics
 
         n
+    }
+
+    pub fn tx(&self) -> Rc<RefCell<Tx>> {
+        Rc::clone(&self.tx)
     }
 }
 
