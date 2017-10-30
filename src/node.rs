@@ -4,9 +4,9 @@ use types::pgid_t;
 use std::rc::{Rc, Weak};
 use std::cell::RefCell;
 use page;
-use std::slice;
 use std::ptr;
 use std::str;
+use tx::Tx;
 
 // Node represents an in-memory, deserialized page.
 pub struct Node<'a> {
@@ -73,10 +73,7 @@ impl<'a> Node<'a> {
     // This is an optimization to avoid calculating a large node when we only need
     // to know if it fits inside a certain page size.
     fn size_less_than(&self, v: usize) -> bool {
-        let mut sz: usize = 0;
-        unsafe {
-            sz = page::get_page_header_size();
-        }
+        let mut sz: usize = page::get_page_header_size();
         let elsz = self.page_element_size();
         for inode in &self.inodes {
             sz += elsz + inode.key.len() + inode.value.len();
@@ -270,7 +267,7 @@ impl<'a> Node<'a> {
         }
 
         // Loop over each item and write it to the page.
-        let mut b: *mut u8 = unsafe{ &mut p.ptr as *mut usize as *mut u8};
+        let mut b: *mut u8 = &mut p.ptr as *mut usize as *mut u8;
         unsafe {
             b = b.offset(self.inodes.len() as isize * self.page_element_size() as isize);
         }
@@ -315,6 +312,35 @@ impl<'a> Node<'a> {
             }
         }
         // DEBUG ONLY: n.dump()
+    }
+
+    // split breaks up a node into multiple smaller nodes, if appropriate.
+    // This should only be called from the spill() function.
+    fn split(&mut self, page_size: usize) -> Vec<Rc<RefCell<Node<'a>>>> {
+        let mut nodes: Vec<Rc<RefCell<Node<'a>>>> = vec![];
+
+        let node_option = self.split_two(page_size);
+        if node_option.is_none() {
+            return nodes;
+        }
+        let mut node  = node_option.unwrap();
+        nodes.push(Rc::clone(&node));
+
+        loop {
+            // Split node into two.
+            let second = node.borrow_mut().split_two(page_size);
+
+            // If we can't split then exit the loop.
+            if second.is_none() {
+                break;
+            }
+
+            // Set node to b so it gets split on the next iteration.
+            node = second.unwrap();
+            nodes.push(Rc::clone(&node));
+        }
+
+        nodes
     }
 
     // split_two breaks up a node into two smaller nodes, if appropriate.
@@ -371,7 +397,6 @@ impl<'a> Node<'a> {
         }
 
         // Update the statistics.
-        // TODO; add stats to bucket
         let bucket_borrow = self.bucket.borrow_mut();
         let mut tx_borrow = bucket_borrow.tx.borrow_mut();
         tx_borrow.stats.split += 1;
@@ -402,6 +427,71 @@ impl<'a> Node<'a> {
             sz += elsize;
         }
         (index, sz)
+    }
+
+    // spill writes the nodes to dirty pages and splits nodes as it goes.
+    // Returns an error if dirty pages cannot be allocated.
+    fn spill(&mut self) -> Result<(), &'static str> {
+        if self.spilled {
+            return Ok(());
+        }
+
+        // Spill child nodes first. Child nodes can materialize sibling nodes in
+        // the case of split-merge so we cannot use a range loop. We have to check
+        // the children size on every loop iteration.
+        {
+            let mut children = self.children.borrow_mut();
+            children.sort_by_key(|node_weak| {
+                let node_ref = node_weak.upgrade().unwrap();
+                let node = node_ref.borrow();
+                let key = node.inodes[0].key;
+                key
+            });
+            for child in children.as_slice() {
+                let cnode_ref = child.upgrade().unwrap();
+                let mut cnode = cnode_ref.borrow_mut();
+                let result = cnode.spill();
+                if result.is_err() {
+                    return result;
+                }
+            }
+
+            // We no longer need the child list because it's only used for spill tracking.
+            children.clear();
+        }
+
+        let page_size = self.get_page_size();
+        /*
+        {
+            let bucket_borrow = self.bucket.borrow();
+            let tx_borrow = bucket_borrow.tx.borrow();
+            let db_borrow = tx_borrow.db.borrow();
+            db_borrow.page_size
+        };
+        */
+
+        // Split nodes into appropriate sizes. The first node will always be self.
+        let tx = self.get_tx();
+        let nodes = self.split(page_size);
+        for node in &nodes {
+            // Add node's page to the freelist if it's not new.
+            if node.borrow().pgid > 0 {
+            }
+        }
+
+        Ok(())
+    }
+
+    fn get_page_size(&self) -> usize {
+        let bucket_borrow = self.bucket.borrow();
+        let tx_borrow = bucket_borrow.tx.borrow();
+        let db_borrow = tx_borrow.db.borrow();
+        db_borrow.page_size
+    }
+
+    fn get_tx(&self) -> Rc<RefCell<Tx>> {
+        let bucket_borrow = self.bucket.borrow();
+        Rc::clone(&bucket_borrow.tx)
     }
 }
 
@@ -434,7 +524,6 @@ mod tests {
     use std::cell::RefCell;
     use bucket::{Bucket, _Bucket};
     use tx::Tx;
-    use db::Meta;
     use std::str;
     use page;
     use std::ptr;
@@ -484,7 +573,7 @@ mod tests {
     fn node_read_leaf_page() {
         // Create a page
         let mut buf: [u8; 4096] = [0; 4096];
-        let mut page: *mut page::Page = buf.as_mut_ptr() as *mut page::Page;
+        let page: *mut page::Page = buf.as_mut_ptr() as *mut page::Page;
         unsafe {
             (*page).flags = page::LEAF_PAGE_FLAG;
             (*page).count = 2;

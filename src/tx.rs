@@ -1,25 +1,37 @@
-use db::Meta;
+use db::{Meta, DB};
 use page::Page;
 use types::pgid_t;
 use std::time::Duration;
 use std::ops::{Add, Sub, AddAssign, SubAssign};
+use std::rc::Rc;
+use std::cell::RefCell;
 
 pub struct Tx {
     pub meta: Meta,
     pub stats: TxStats,
+    pub db: Rc<RefCell<DB>>
 }
 
 impl Tx {
-    pub fn new() -> Tx {
+    pub fn new(db: &Rc<RefCell<DB>>) -> Tx {
         Tx {
             meta: Meta::new(),
             stats: TxStats::new(),
+            db: Rc::clone(db),
         }
     }
 
     pub fn page(&self, pgid: pgid_t) -> Option<Page> {
         None
     }
+
+    // delegate to freelist.
+    // releases a page and its overflow for a given transaction id.
+    // If the page is already free then a panic will occur.
+    pub fn free(&self, pgid: pgid_t) {
+
+    }
+
 }
 
 // TxStats represents statistics about the actions performed by the transaction.

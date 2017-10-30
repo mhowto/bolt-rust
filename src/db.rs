@@ -29,3 +29,16 @@ impl Meta {
         }
     }
 }
+
+pub struct DB {
+    pub page_size: usize,
+}
+
+
+impl DB {
+    pub fn new() -> DB {
+        DB {
+            page_size: 4 * 1024,
+        }
+    }
+}
