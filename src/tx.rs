@@ -21,17 +21,31 @@ impl Tx {
         }
     }
 
-    pub fn page(&self, pgid: pgid_t) -> Option<Page> {
-        None
+    // page returns a reference to the page with a given id.
+    // If page has been written to then a temporary buffered page is returned.
+    pub fn page(&self, pgid: pgid_t) -> Rc<RefCell<Page>> {
+        unimplemented!();
     }
 
     // delegate to freelist.
     // releases a page and its overflow for a given transaction id.
     // If the page is already free then a panic will occur.
     pub fn free(&self, pgid: pgid_t) {
+        let db_borrow = self.db.borrow_mut();
+        let freelist_borrow = db_borrow.freelist.borrow_mut();
 
+        freelist_borrow.free(self.meta.pgid, Rc::clone(&self.page(pgid)));
     }
 
+    // allocate returns a continuous block of memory starting at a given page
+    pub fn allocate(&self, count: usize) -> Result<Rc<RefCell<Page>>, &'static str> {
+//        return Err("沟里个就算所以")
+        unimplemented!();
+    }
+
+    pub fn get_page_size(&self) -> usize {
+        self.db.borrow().page_size
+    }
 }
 
 // TxStats represents statistics about the actions performed by the transaction.

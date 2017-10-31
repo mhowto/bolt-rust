@@ -18,3 +18,4 @@ mod tx;
 mod db;
 mod page;
 mod meta;
+mod freelist;

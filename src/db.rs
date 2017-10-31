@@ -1,6 +1,9 @@
 use types::pgid_t;
 use types::txid_t;
 use bucket::_Bucket;
+use freelist::FreeList;
+use std::rc::Rc;
+use std::cell::RefCell;
 
 pub struct Meta {
     pub magic: u32,
@@ -32,6 +35,9 @@ impl Meta {
 
 pub struct DB {
     pub page_size: usize,
+
+    // TODO: need to use mutex
+    pub freelist: Rc<RefCell<FreeList>>,
 }
 
 
@@ -39,6 +45,7 @@ impl DB {
     pub fn new() -> DB {
         DB {
             page_size: 4 * 1024,
+            freelist: Rc::new(RefCell::new(FreeList::new())),
         }
     }
 }

@@ -23,7 +23,7 @@ pub struct Bucket<'a> {
     pub bucket: Box<_Bucket>,
     pub tx: Rc<RefCell<Tx>>,                                   // the associated transcation
     buckets: HashMap<&'static str, Bucket<'a>>,        // subbucket cache
-    page: Option<Rc<Page>>,                            // inline page reference
+    page: Option<Rc<RefCell<Page>>>,                            // inline page reference
     pub root_node: Option<Rc<RefCell<Node<'a>>>>,      // materialized node for the root page.
     pub nodes: HashMap<pgid_t, Rc<RefCell<Node<'a>>>>, // node cache
 
@@ -73,7 +73,7 @@ impl<'a> Bucket<'a> {
         // use the inline page if this is an inline bucket.
         let p = &mut self.page;
         if p.is_none() {
-            *p = Some(Rc::new(self.tx.borrow().page(pgid).unwrap()));
+            *p = Some(Rc::clone(&self.tx.borrow().page(pgid)));
         }
 
         // Read the page into the node and cache it.

@@ -314,6 +314,72 @@ impl<'a> Node<'a> {
         // DEBUG ONLY: n.dump()
     }
 
+    pub fn write_refcell(&mut self, p: Rc<RefCell<page::Page>>) {
+        // Initialize page
+        if self.is_leaf {
+            p.borrow_mut().flags |= page::LEAF_PAGE_FLAG;
+        } else {
+            p.borrow_mut().flags |= page::BRANCH_PAGE_FLAG;
+        }
+
+        if self.inodes.len() >= 0xFFFF {
+            panic!("inode overflow: {} (pgid={})", self.inodes.len(), p.borrow().id);
+        }
+        p.borrow_mut().count = self.inodes.len() as u16;
+
+        // Stop here if there are no items to write
+        if p.borrow().count == 0 {
+            return
+        }
+
+        // Loop over each item and write it to the page.
+        let mut b: *mut u8 = &mut p.borrow_mut().ptr as *mut usize as *mut u8;
+        unsafe {
+            b = b.offset(self.inodes.len() as isize * self.page_element_size() as isize);
+        }
+
+        for (i, item) in self.inodes.iter().enumerate() {
+            assert!(item.key.len() > 0, "write: zero-length inode key");
+
+            // Write the page element
+            if self.is_leaf {
+                let elem = p.borrow().leaf_page_element(i as u16)
+                    as *mut page::LeafPageElement;
+                unsafe {
+                    (*elem).pos = b as u32 - elem as u32;
+                    (*elem).flags = item.flags;
+                    (*elem).ksize = item.key.len() as u32;
+                    (*elem).vsize = item.value.len() as u32;
+                }
+            } else {
+                let elem = p.borrow().branch_page_element(i as u16)
+                    as *mut page::BranchPageElement;
+                unsafe {
+                    (*elem).pos = b as u32 - elem as u32;
+                    (*elem).ksize = item.key.len() as u32;
+                    (*elem).pgid = item.pgid;
+                    assert_ne!((*elem).pgid, p.borrow().id, "write: circular dependency occurred");
+                }
+            }
+
+            // If the length of key+value is larger than the max allocation size
+            // then we need to reallocate the byte array pointer.
+            //
+            // See: https://github.com/boltdb/bolt/pull/335
+            let klen = item.key.len();
+            let vlen = item.value.len();
+
+            // Write data for the element to the end of the page.
+            unsafe {
+                ptr::copy(item.key.as_ptr(), b, klen);
+                b = b.offset(klen as isize);
+                ptr::copy(item.value.as_ptr(), b, vlen);
+                b = b.offset(vlen as isize);
+            }
+        }
+        // DEBUG ONLY: n.dump()
+    }
+
     // split breaks up a node into multiple smaller nodes, if appropriate.
     // This should only be called from the spill() function.
     fn split(&mut self, page_size: usize) -> Vec<Rc<RefCell<Node<'a>>>> {
@@ -476,7 +542,27 @@ impl<'a> Node<'a> {
         for node in &nodes {
             // Add node's page to the freelist if it's not new.
             if node.borrow().pgid > 0 {
+                tx.borrow_mut().free(node.borrow().pgid);
+                node.borrow_mut().pgid = 0;
             }
+
+            // Allocate contiguous space for the node.
+            let result = tx.borrow_mut().allocate(self.size() / tx.borrow().get_page_size() + 1);
+            match result {
+                Err(s) => return Err(s),
+                Ok(p) => {
+                    // Write the code.
+                    if p.borrow().id >= tx.borrow().meta.pgid {
+                        panic!("pgid {} above high water mark {}", p.borrow().id, tx.borrow().meta.pgid);
+                    }
+                    self.pgid = p.borrow().id;
+
+                    self.write_refcell(Rc::clone(&p));
+
+                    // Insert into parent inodes.
+                },
+            }
+
         }
 
         Ok(())
