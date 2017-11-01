@@ -598,14 +598,6 @@ impl<'a> Node<'a> {
         }
 
         let page_size = self.get_page_size();
-        /*
-        {
-            let bucket_borrow = self.bucket.borrow();
-            let tx_borrow = bucket_borrow.tx.borrow();
-            let db_borrow = tx_borrow.db.borrow();
-            db_borrow.page_size
-        };
-        */
 
         // Split nodes into appropriate sizes. The first node will always be self.
         let tx = self.get_tx();
@@ -646,7 +638,13 @@ impl<'a> Node<'a> {
                     };
                 },
             }
+
+            // Update the statistics
+            tx.borrow_mut().stats.spill += 1;
         }
+
+        // If the root node split and created a new root then we need to spill that
+        // as well. We'll clear out the children to make sure it doesn't try to respill.
 
         Ok(())
     }
@@ -696,21 +694,23 @@ mod tests {
     use std::str;
     use page;
     use std::ptr;
+    use db::DB;
 
     #[test]
     fn node_put() {
+        let db = Rc::new(RefCell::new(DB::new()));
         let bucket: Rc<RefCell<Bucket>> = Rc::new(RefCell::new(Bucket::new(
             Box::new(_Bucket {
                 root: 0,
                 sequence: 0,
             }),
-            Rc::new(RefCell::new(Tx::new())),
+            Rc::new(RefCell::new(Tx::new(&db))),
         )));
         let mut node = Node::new(Rc::clone(&bucket));
-        node.put("baz", "baz", "2", 0, 0);
-        node.put("foo", "foo", "0", 0, 0);
-        node.put("bar", "bar", "1", 0, 0);
-        node.put("foo", "foo", "3", 0, 0x02);
+        node.put("baz", "baz", Some("2"), 0, 0);
+        node.put("foo", "foo", Some("0"), 0, 0);
+        node.put("bar", "bar", Some("1"), 0, 0);
+        node.put("foo", "foo", Some("3"), 0, 0x02);
 
         assert_eq!(node.inodes.len(), 3);
         assert_eq!(node.size(), 16 + 3 * (16 + 4));
@@ -718,19 +718,19 @@ mod tests {
         {
             let inode = &node.inodes[0];
             assert_eq!(inode.key, "bar");
-            assert_eq!(inode.value, "1");
+            assert_eq!(inode.value, Some("1"));
         }
 
         {
             let inode = &node.inodes[1];
             assert_eq!(inode.key, "baz");
-            assert_eq!(inode.value, "2");
+            assert_eq!(inode.value, Some("2"));
         }
 
         {
             let inode = &node.inodes[2];
             assert_eq!(inode.key, "foo");
-            assert_eq!(inode.value, "3");
+            assert_eq!(inode.value, Some("3"));
         }
 
         {
@@ -777,12 +777,13 @@ mod tests {
         }
 
         // Deserialize page into a leaf.
+        let db = Rc::new(RefCell::new(DB::new()));
         let mut n = Node::new(Rc::new(RefCell::new(Bucket::new(
             Box::new(_Bucket {
                 root: 0,
                 sequence: 0,
             }),
-            Rc::new(RefCell::new(Tx::new())),
+            Rc::new(RefCell::new(Tx::new(&db))),
         ))));
         unsafe { n.read(page.as_mut().unwrap()); }
 
@@ -790,14 +791,15 @@ mod tests {
         assert!(n.is_leaf, "expected leaf");
         assert_eq!(n.inodes.len(), 2);
         assert_eq!(n.inodes[0].key, "bar");
-        assert_eq!(n.inodes[0].value, "fooz");
+        assert_eq!(n.inodes[0].value, Some("fooz"));
         assert_eq!(n.inodes[1].key, "helloworld");
-        assert_eq!(n.inodes[1].value, "bye");
+        assert_eq!(n.inodes[1].value, Some("bye"));
     }
 
     #[test]
     fn node_write_leaf_page() {
-        let mut tx = Tx::new();
+        let db = Rc::new(RefCell::new(DB::new()));
+        let mut tx = Tx::new(&db);
         tx.meta.pgid = 1;
 
         let bucket = Bucket::new(
@@ -810,9 +812,9 @@ mod tests {
 
         let mut n = Node::new(Rc::new(RefCell::new(bucket)));
         n.is_leaf = true;
-        n.put("susy", "susy", "que", 0, 0);
-        n.put("ricki", "ricki", "lake", 0, 0);
-        n.put("john", "john", "johnson", 0, 0);
+        n.put("susy", "susy", Some("que"), 0, 0);
+        n.put("ricki", "ricki", Some("lake"), 0, 0);
+        n.put("john", "john", Some("johnson"), 0, 0);
 
         // write it to a page
         let mut buf: [u8; 4096] = [0; 4096];
@@ -826,7 +828,7 @@ mod tests {
                 root: 0,
                 sequence: 0,
             }),
-            Rc::new(RefCell::new(Tx::new())),
+            Rc::new(RefCell::new(Tx::new(&db))),
         ))));
         unsafe { n2.read(page.as_mut().unwrap()); }
 
@@ -834,12 +836,12 @@ mod tests {
         assert_eq!(n2.inodes.len(), 3);
 
         assert_eq!(n2.inodes[0].key, "john");
-        assert_eq!(n2.inodes[0].value, "johnson");
+        assert_eq!(n2.inodes[0].value, Some("johnson"));
 
         assert_eq!(n2.inodes[1].key, "ricki");
-        assert_eq!(n2.inodes[1].value, "lake");
+        assert_eq!(n2.inodes[1].value, Some("lake"));
 
         assert_eq!(n2.inodes[2].key, "susy");
-        assert_eq!(n2.inodes[2].value, "que");
+        assert_eq!(n2.inodes[2].value, Some("que"));
     }
 }
