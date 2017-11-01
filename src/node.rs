@@ -64,7 +64,10 @@ impl<'a> Node<'a> {
         }
         let elsz = self.page_element_size();
         for inode in &self.inodes {
-            sz += elsz + inode.key.len() + inode.value.len();
+            sz += elsz + inode.key.len() + match inode.value {
+                None => 0,
+                Some(ref v) => v.len(),
+            };
         }
         sz
     }
@@ -76,7 +79,10 @@ impl<'a> Node<'a> {
         let mut sz: usize = page::get_page_header_size();
         let elsz = self.page_element_size();
         for inode in &self.inodes {
-            sz += elsz + inode.key.len() + inode.value.len();
+            sz += elsz + inode.key.len() + match inode.value {
+                None => 0,
+                Some(ref v) => v.len(),
+            };
             if sz >= v {
                 return false;
             }
@@ -155,6 +161,7 @@ impl<'a> Node<'a> {
         Some(parent.child_at(index - 1))
     }
 
+    /*
     pub fn put(
         &mut self,
         old_key: &'a str,
@@ -171,6 +178,47 @@ impl<'a> Node<'a> {
         } else if old_key.len() <= 0 {
             panic!("put: zero-length old key")
         } else if new_key.len() <= 0 {
+            panic!("put: zero-length new key")
+        }
+
+        // Find insertion index
+        let r = self.inodes
+            .binary_search_by(|ref inode| inode.key.cmp(old_key));
+
+        // Add capacity and shift nodes if we don't have an exact match and need to insert.
+        let index = match r {
+            Err(idx) => {
+                self.inodes.insert(idx, INode::new());
+                idx
+            }
+            Ok(idx) => idx,
+        };
+
+        let inode = &mut self.inodes[index];
+        inode.flags = flags;
+        inode.key = new_key;
+        inode.value = value;
+        inode.pgid = pgid;
+        assert!(inode.key.len() > 0, "put: zero-length inode key");
+    }
+    */
+
+    pub fn put(
+        &mut self,
+        old_key: &'a str,
+        new_key: &'a str,
+        value: Option<&'a str>,
+        pgid: pgid_t,
+        flags: u32,
+    ) {
+        let bucket_borrow = self.bucket.borrow();
+        let tx_borrow = bucket_borrow.tx.borrow();
+        let meta_pgid = tx_borrow.meta.pgid;
+        if pgid > meta_pgid {
+            panic!("pgid {} above high water mark {}", pgid, meta_pgid)
+        } else if old_key.len() == 0 {
+            panic!("put: zero-length old key")
+        } else if new_key.len() == 0 {
             panic!("put: zero-length new key")
         }
 
@@ -222,7 +270,7 @@ impl<'a> Node<'a> {
                         flags: (*elem).flags,
                         pgid: 0,
                         key:  str::from_utf8((*elem).key()).unwrap(),
-                        value: str::from_utf8((*elem).value()).unwrap(),
+                        value: Some(str::from_utf8((*elem).value()).unwrap()),
                     });
                 }
             } else {
@@ -232,7 +280,7 @@ impl<'a> Node<'a> {
                         flags: 0,
                         pgid: (*elem).pgid,
                         key: str::from_utf8((*elem).key()).unwrap(),
-                        value: "",
+                        value: None,
                     })
                 }
             }
@@ -283,7 +331,10 @@ impl<'a> Node<'a> {
                     (*elem).pos = b as u32 - elem as u32;
                     (*elem).flags = item.flags;
                     (*elem).ksize = item.key.len() as u32;
-                    (*elem).vsize = item.value.len() as u32;
+                    (*elem).vsize = match item.value {
+                        None => 0,
+                        Some(ref v) => v.len(),
+                    } as u32;
                 }
             } else {
                 let elem = p.branch_page_element(i as u16)
@@ -300,16 +351,24 @@ impl<'a> Node<'a> {
             // then we need to reallocate the byte array pointer.
             //
             // See: https://github.com/boltdb/bolt/pull/335
-            let klen = item.key.len();
-            let vlen = item.value.len();
-
             // Write data for the element to the end of the page.
+            let klen = item.key.len();
             unsafe {
                 ptr::copy(item.key.as_ptr(), b, klen);
                 b = b.offset(klen as isize);
-                ptr::copy(item.value.as_ptr(), b, vlen);
-                b = b.offset(vlen as isize);
             }
+
+            match item.value {
+                None => (),
+                Some(ref v) => {
+                    let vlen = v.len();
+                    unsafe {
+                        ptr::copy(v.as_ptr(), b, vlen);
+                        b = b.offset(vlen as isize);
+                    }
+                },
+            };
+
         }
         // DEBUG ONLY: n.dump()
     }
@@ -349,7 +408,10 @@ impl<'a> Node<'a> {
                     (*elem).pos = b as u32 - elem as u32;
                     (*elem).flags = item.flags;
                     (*elem).ksize = item.key.len() as u32;
-                    (*elem).vsize = item.value.len() as u32;
+                    (*elem).vsize = match item.value {
+                        None => 0,
+                        Some(ref v) => v.len(),
+                    } as u32;
                 }
             } else {
                 let elem = p.borrow().branch_page_element(i as u16)
@@ -366,16 +428,22 @@ impl<'a> Node<'a> {
             // then we need to reallocate the byte array pointer.
             //
             // See: https://github.com/boltdb/bolt/pull/335
-            let klen = item.key.len();
-            let vlen = item.value.len();
-
             // Write data for the element to the end of the page.
+            let klen = item.key.len();
             unsafe {
                 ptr::copy(item.key.as_ptr(), b, klen);
                 b = b.offset(klen as isize);
-                ptr::copy(item.value.as_ptr(), b, vlen);
-                b = b.offset(vlen as isize);
             }
+            match item.value {
+                None => (),
+                Some(ref v) => {
+                    let vlen = v.len();
+                    unsafe {
+                        ptr::copy(v.as_ptr(), b, vlen);
+                        b = b.offset(vlen as isize);
+                    }
+                },
+            };
         }
         // DEBUG ONLY: n.dump()
     }
@@ -481,7 +549,10 @@ impl<'a> Node<'a> {
         for i in 0 .. self.inodes.len() - page::MIN_KEYS_PER_PAGE as usize{
             index = i;
             let inode = &self.inodes[i];
-            let elsize = self.page_element_size() + inode.key.len() + inode.value.len();
+            let elsize = self.page_element_size() + inode.key.len() + match inode.value {
+                None => 0,
+                Some(ref v) => v.len(),
+            };
 
             // If we have at least the minimum number of keys and adding another
             // node would put us over the threshold then exit and return.
@@ -556,13 +627,25 @@ impl<'a> Node<'a> {
                         panic!("pgid {} above high water mark {}", p.borrow().id, tx.borrow().meta.pgid);
                     }
                     self.pgid = p.borrow().id;
-
                     self.write_refcell(Rc::clone(&p));
+                    self.spilled = true;
 
                     // Insert into parent inodes.
+                    match self.parent {
+                        None => (),
+                        Some(ref p) => {
+                            let mut key = self.key;
+                            if key.len() == 0 {
+                                key = self.inodes[0].key;
+                            }
+
+                            p.borrow_mut().put(key, self.inodes[0].key, None, self.pgid, 0);
+                            self.key = self.inodes[0].key;
+                            assert!(self.key.len() > 0, "spill: zero-length node key");
+                        }
+                    };
                 },
             }
-
         }
 
         Ok(())
@@ -589,7 +672,7 @@ pub struct INode<'a> {
     pub flags: u32,
     pub pgid: pgid_t,
     pub key: &'a str,
-    pub value: &'a str,
+    pub value: Option<&'a str>,
 }
 
 impl<'a> INode<'a> {
@@ -598,7 +681,7 @@ impl<'a> INode<'a> {
             flags: 0,
             pgid: 0,
             key: "",
-            value: "",
+            value: None,
         }
     }
 }
