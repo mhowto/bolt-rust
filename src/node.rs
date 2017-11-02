@@ -631,6 +631,7 @@ impl<'a> Node<'a> {
                                 key = self.inodes[0].key;
                             }
 
+                            // 只有在spill的时候才会更新父节点的key
                             p.borrow_mut().put(key, self.inodes[0].key, None, self.pgid, 0);
                             self.key = self.inodes[0].key;
                             assert!(self.key.len() > 0, "spill: zero-length node key");
