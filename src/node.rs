@@ -16,9 +16,9 @@ pub struct Node<'a> {
     pub spilled: bool,
     pub key: &'a str,
     pub pgid: pgid_t,
-    pub parent: Option<Rc<RefCell<Node<'a>>>>,
+    pub parent: Option<Weak<RefCell<Node<'a>>>>,
     pub inodes: Vec<INode<'a>>,
-    children: RefCell<Vec<Weak<RefCell<Node<'a>>>>>,
+    children: RefCell<Vec<Rc<RefCell<Node<'a>>>>>,
     pub weak_self: Weak<RefCell<Node<'a>>>, // pointer to self
 }
 
@@ -45,7 +45,10 @@ impl<'a> Node<'a> {
 
     pub fn root(&self) -> Rc<RefCell<Node<'a>>> {
         if let Some(ref p) = self.parent {
-            p.borrow().root()
+            match p.upgrade() {
+                None => self.to_rc_refcell_node(),
+                Some(ref pp) => pp.borrow().root()
+            }
         } else {
             self.to_rc_refcell_node()
         }
@@ -61,10 +64,7 @@ impl<'a> Node<'a> {
 
     // size returns the size of the node after serialization
     pub fn size(&self) -> usize {
-        let mut sz: usize = 0;
-        unsafe {
-            sz = page::get_page_header_size();
-        }
+        let mut sz: usize = page::get_page_header_size();
         let elsz = self.page_element_size();
         for inode in &self.inodes {
             sz += elsz + inode.key.len() + match inode.value {
@@ -103,11 +103,11 @@ impl<'a> Node<'a> {
 
     pub fn append_child(&mut self, child: &Rc<RefCell<Node<'a>>>) {
         let mut children = self.children.borrow_mut();
-        children.push(Rc::downgrade(child));
+        children.push(Rc::clone(child));
     }
 
-    pub fn set_parent(&mut self, p: &Rc<RefCell<Node<'a>>>) {
-        self.parent = Some(Rc::clone(p));
+    pub fn set_parent(&mut self, p: Weak<RefCell<Node<'a>>>) {
+        self.parent = Some(p);
     }
 
     pub fn child_at(&self, index: usize) -> Rc<RefCell<Node<'a>>> {
@@ -142,7 +142,8 @@ impl<'a> Node<'a> {
         if self.parent.is_none() {
             return None
         }
-        let parent_refcell = self.parent.as_ref().unwrap();
+        let parent_weak_refcell = self.parent.as_ref().unwrap();
+        let parent_refcell = parent_weak_refcell.upgrade().unwrap();
         let parent = parent_refcell.borrow();
         let index = parent.child_index(self);
         if index >= parent.num_children() -1 {
@@ -155,7 +156,8 @@ impl<'a> Node<'a> {
         if self.parent.is_none() {
             return None
         }
-        let parent_refcell = self.parent.as_ref().unwrap();
+        let parent_weak_refcell = self.parent.as_ref().unwrap();
+        let parent_refcell = parent_weak_refcell.upgrade().unwrap();
         let parent = parent_refcell.borrow();
         let index = parent.child_index(self);
         if index == 0 {
@@ -453,10 +455,10 @@ impl<'a> Node<'a> {
 
     // split breaks up a node into multiple smaller nodes, if appropriate.
     // This should only be called from the spill() function.
-    fn split(&mut self, page_size: usize) -> Vec<Rc<RefCell<Node<'a>>>> {
+    fn split(&mut self, page_size: usize, new_parents: &mut Vec<Rc<RefCell<Node<'a>>>>) -> Vec<Rc<RefCell<Node<'a>>>> {
         let mut nodes: Vec<Rc<RefCell<Node<'a>>>> = vec![];
 
-        let node_option = self.split_two(page_size);
+        let node_option = self.split_two(page_size, new_parents);
         if node_option.is_none() {
             return nodes;
         }
@@ -465,7 +467,7 @@ impl<'a> Node<'a> {
 
         loop {
             // Split node into two.
-            let second = node.borrow_mut().split_two(page_size);
+            let second = node.borrow_mut().split_two(page_size, new_parents);
 
             // If we can't split then exit the loop.
             if second.is_none() {
@@ -482,7 +484,7 @@ impl<'a> Node<'a> {
 
     // split_two breaks up a node into two smaller nodes, if appropriate.
     // This should only be called from the split() function.
-    fn split_two(&mut self, page_size: usize) -> Option<Rc<RefCell<Node<'a>>>> {
+    fn split_two(&mut self, page_size: usize, new_parents: &mut Vec<Rc<RefCell<Node<'a>>>>) -> Option<Rc<RefCell<Node<'a>>>> {
         // Ignore the split if the page doesn't have at least enough nodes for
         // two pages or if the nodes can fit in a single pages.
         if self.inodes.len() < page::MIN_KEYS_PER_PAGE as usize * 2 || self.size_less_than(page_size) {
@@ -507,8 +509,9 @@ impl<'a> Node<'a> {
             let node =  Rc::new(RefCell::new(Node::new(Rc::clone(&self.bucket))));
             let node_refmut = node.borrow_mut();
             let mut children = node_refmut.children.borrow_mut();
-            children.push(Rc::downgrade(&self.to_rc_refcell_node()));
-            self.parent = Some(Rc::clone(&node));
+            children.push(Rc::clone(&self.to_rc_refcell_node()));
+            self.parent = Some(Rc::downgrade(&node));
+            new_parents.push(Rc::clone(&node));
         }
 
         let next = Rc::new(RefCell::new(Node {
@@ -528,10 +531,11 @@ impl<'a> Node<'a> {
         match self.parent {
             None => panic!("node should have parent"),
             Some(ref p) => {
-                next.borrow_mut().parent = Some(Rc::clone(&p));
-                let p_refmut = p.borrow_mut();
+                next.borrow_mut().parent = Some(Weak::clone(p));
+                let p_refmut_strong = p.upgrade().unwrap();
+                let p_refmut = p_refmut_strong.borrow_mut();
                 let mut children_refmut = p_refmut.children.borrow_mut();
-                children_refmut.push(Rc::downgrade(&Rc::clone(&next)));
+                children_refmut.push(Rc::clone(&next));
             },
         }
 
@@ -573,9 +577,10 @@ impl<'a> Node<'a> {
 
     // spill writes the nodes to dirty pages and splits nodes as it goes.
     // Returns an error if dirty pages cannot be allocated.
-    fn spill(&mut self) -> Result<(), &'static str> {
+    fn spill(&mut self) -> Result<Vec<Rc<RefCell<Node<'a>>>>, &'static str> {
+        let mut new_parents = Vec::new();
         if self.spilled {
-            return Ok(());
+            return Ok(new_parents);
         }
 
         // Spill child nodes first. Child nodes can materialize sibling nodes in
@@ -583,15 +588,13 @@ impl<'a> Node<'a> {
         // the children size on every loop iteration.
         {
             let mut children = self.children.borrow_mut();
-            children.sort_by_key(|node_weak| {
-                let node_ref = node_weak.upgrade().unwrap();
-                let node = node_ref.borrow();
+            children.sort_by_key(|node_strong| {
+                let node = node_strong.borrow();
                 let key = node.inodes[0].key;
                 key
             });
             for child in children.as_slice() {
-                let cnode_ref = child.upgrade().unwrap();
-                let mut cnode = cnode_ref.borrow_mut();
+                let mut cnode = child.borrow_mut();
                 let result = cnode.spill();
                 if result.is_err() {
                     return result;
@@ -606,7 +609,7 @@ impl<'a> Node<'a> {
 
         // Split nodes into appropriate sizes. The first node will always be self.
         let tx = self.get_tx();
-        let nodes = self.split(page_size);
+        let nodes = self.split(page_size, &mut new_parents);
         for node in &nodes {
             // Add node's page to the freelist if it's not new.
             if node.borrow().pgid > 0 {
@@ -637,7 +640,8 @@ impl<'a> Node<'a> {
                             }
 
                             // 只有在spill的时候才会更新父节点的key
-                            p.borrow_mut().put(key, self.inodes[0].key, None, self.pgid, 0);
+                            let p_strong = p.upgrade().unwrap();
+                            p_strong.borrow_mut().put(key, self.inodes[0].key, None, self.pgid, 0);
                             self.key = self.inodes[0].key;
                             assert!(self.key.len() > 0, "spill: zero-length node key");
                         }
@@ -652,13 +656,14 @@ impl<'a> Node<'a> {
         // If the root node split and created a new root then we need to spill that
         // as well. We'll clear out the children to make sure it doesn't try to respill.
         if let Some(ref p) = self.parent {
-            if p.borrow().pgid == 0 {
+            let p_strong = p.upgrade().unwrap();
+            if p_strong.borrow().pgid == 0 {
                 self.children.borrow_mut().clear();
-                return p.borrow_mut().spill();
+                return p_strong.borrow_mut().spill();
             }
         }
 
-        Ok(())
+        Ok(new_parents)
     }
 
     fn get_page_size(&self) -> usize {
@@ -671,6 +676,29 @@ impl<'a> Node<'a> {
     fn get_tx(&self) -> Rc<RefCell<Tx>> {
         let bucket_borrow = self.bucket.borrow();
         Rc::clone(&bucket_borrow.tx)
+    }
+
+    // attempts to combine the node with sibling nodes if the node fill
+    // size is below a threshold or if there are not enough keys.
+    fn reblance(&mut self) {
+        unimplemented!();
+    }
+
+    // remove a node from the list of in-memory children.
+    // This does not affect the inodes.
+    fn remove_child(&mut self, target: Rc<RefCell<Node<'a>>>) {
+        unimplemented!();
+    }
+
+    // dereference causes the node to copy all its inode key/value references to heap memory.
+    // This is required when the mmap is reallocated so inodes are not pointing to stale data.
+    fn dereference(&mut self) {
+        unimplemented!();
+    }
+
+    // free adds the node's underlying page to the freelist.
+    fn free(&mut self) {
+        unimplemented!();
     }
 }
 
@@ -882,24 +910,86 @@ mod tests {
         n.borrow_mut().put("00000005", "00000005", Some("0123456701234567"), 0, 0);
 
         // Split between 2 & 3
-        n.borrow_mut().split(100);
+        let mut new_parents = vec![];
+        n.borrow_mut().split(100, &mut new_parents);
 
         let n_borrow = n.borrow();
         match n_borrow.parent {
             None => assert!(false),
             Some(ref p) => {
-                let p_borrow = p.borrow();
+                let p_strong = p.upgrade().unwrap();
+                let p_borrow = p_strong.borrow();
                 let children_borrow = p_borrow.children.borrow();
                 assert_eq!(children_borrow.len(), 2);
 
 
                 {
-                    let child1 = children_borrow[0].upgrade().unwrap();
-                    assert_eq!(child1.borrow().inodes.len(), 2);
-                    let child2 = children_borrow[1].upgrade().unwrap();
-                    assert_eq!(child2.borrow().inodes.len(), 2);
+                    let child1 = children_borrow[0].borrow();
+                    assert_eq!(child1.inodes.len(), 2);
+                    let child2 = children_borrow[1].borrow();
+                    assert_eq!(child2.inodes.len(), 3);
                 }
             }
         }
+    }
+
+    // Ensure that a page with the minimum number of inodes just returns a single node.
+    #[test]
+    fn node_split_min_keys() {
+        // Create a node
+        let db = Rc::new(RefCell::new(DB::new()));
+        let mut tx = Tx::new(&db);
+        tx.meta.pgid = 1;
+
+        let bucket = Bucket::new(
+            Box::new(_Bucket{
+                root: 0,
+                sequence: 0,
+            }),
+            Rc::new(RefCell::new(tx)),
+        );
+
+        let n = Rc::new(RefCell::new(Node::new(Rc::new(RefCell::new(bucket)))));
+        n.borrow_mut().weak_self = Rc::downgrade(&n);
+        n.borrow_mut().put("00000001", "00000001", Some("0123456701234567"), 0, 0);
+        n.borrow_mut().put("00000002", "00000002", Some("0123456701234567"), 0, 0);
+
+        // Split
+        let mut new_parents = vec![];
+        n.borrow_mut().split(20, &mut new_parents);
+
+        let n_borrow = n.borrow();
+        assert!(n_borrow.parent.is_none(), "expected nil parent");
+    }
+
+    #[test]
+    fn node_split_single_page() {
+        // Create a node
+        let db = Rc::new(RefCell::new(DB::new()));
+        let mut tx = Tx::new(&db);
+        tx.meta.pgid = 1;
+
+        let bucket = Bucket::new(
+            Box::new(_Bucket{
+                root: 0,
+                sequence: 0,
+            }),
+            Rc::new(RefCell::new(tx)),
+        );
+
+        let n = Rc::new(RefCell::new(Node::new(Rc::new(RefCell::new(bucket)))));
+        n.borrow_mut().weak_self = Rc::downgrade(&n);
+        n.borrow_mut().put("00000001", "00000001", Some("0123456701234567"), 0, 0);
+        n.borrow_mut().put("00000002", "00000002", Some("0123456701234567"), 0, 0);
+        n.borrow_mut().put("00000003", "00000003", Some("0123456701234567"), 0, 0);
+        n.borrow_mut().put("00000004", "00000004", Some("0123456701234567"), 0, 0);
+        n.borrow_mut().put("00000005", "00000005", Some("0123456701234567"), 0, 0);
+
+        // Split between 2 & 3
+        let mut new_parents = vec![];
+        n.borrow_mut().split(4096, &mut new_parents);
+
+        let n_borrow = n.borrow();
+        assert!(n_borrow.parent.is_none(), "expected nil parent");
     }
 }

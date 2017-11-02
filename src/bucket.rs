@@ -66,7 +66,7 @@ impl<'a> Bucket<'a> {
         if let Some(ref p) = parent {
             let mut parent_node = p.borrow_mut();
             parent_node.append_child(&n);
-            n.borrow_mut().set_parent(&Rc::clone(p));
+            n.borrow_mut().set_parent(Rc::downgrade(p));
         } else {
             self.root_node = Some(Rc::clone(&n));
         }
@@ -81,6 +81,7 @@ impl<'a> Bucket<'a> {
         self.nodes.insert(pgid, Rc::clone(&n));
 
         // Update statistics
+        unimplemented!();
 
         n
     }
