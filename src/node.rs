@@ -19,6 +19,7 @@ pub struct Node<'a> {
     pub parent: Option<Rc<RefCell<Node<'a>>>>,
     pub inodes: Vec<INode<'a>>,
     children: RefCell<Vec<Weak<RefCell<Node<'a>>>>>,
+    pub weak_self: Weak<RefCell<Node<'a>>>, // pointer to self
 }
 
 impl<'a> Node<'a> {
@@ -33,11 +34,13 @@ impl<'a> Node<'a> {
             parent: None,
             children: RefCell::new(vec![]),
             inodes: Vec::new(),
+            weak_self: Weak::new(),
         }
     }
 
     fn to_rc_refcell_node(&self) -> Rc<RefCell<Node<'a>>> {
-        Rc::clone(self.bucket.borrow().nodes.get(&(self.pgid)).unwrap())
+//        Rc::clone(self.bucket.borrow().nodes.get(&(self.pgid)).unwrap())
+        Rc::clone(&self.weak_self.upgrade().unwrap())
     }
 
     pub fn root(&self) -> Rc<RefCell<Node<'a>>> {
@@ -518,7 +521,9 @@ impl<'a> Node<'a> {
             parent: None,
             inodes: self.inodes.split_off(split_index), // Split inodes across two nodes.
             children: RefCell::new(Vec::new()),
+            weak_self: Weak::new(),
         }));
+        next.borrow_mut().weak_self = Rc::downgrade(&next);
         // Create a new node and add it to the parent.
         match self.parent {
             None => panic!("node should have parent"),
@@ -526,7 +531,7 @@ impl<'a> Node<'a> {
                 next.borrow_mut().parent = Some(Rc::clone(&p));
                 let p_refmut = p.borrow_mut();
                 let mut children_refmut = p_refmut.children.borrow_mut();
-                children_refmut.push(Rc::downgrade(&next));
+                children_refmut.push(Rc::downgrade(&Rc::clone(&next)));
             },
         }
 
@@ -646,6 +651,12 @@ impl<'a> Node<'a> {
 
         // If the root node split and created a new root then we need to spill that
         // as well. We'll clear out the children to make sure it doesn't try to respill.
+        if let Some(ref p) = self.parent {
+            if p.borrow().pgid == 0 {
+                self.children.borrow_mut().clear();
+                return p.borrow_mut().spill();
+            }
+        }
 
         Ok(())
     }
@@ -844,5 +855,51 @@ mod tests {
 
         assert_eq!(n2.inodes[2].key, "susy");
         assert_eq!(n2.inodes[2].value, Some("que"));
+    }
+
+    // Ensure that a node can split into approriate subgroups.
+    #[test]
+    fn node_split() {
+        // Create a node
+        let db = Rc::new(RefCell::new(DB::new()));
+        let mut tx = Tx::new(&db);
+        tx.meta.pgid = 1;
+
+        let bucket = Bucket::new(
+            Box::new(_Bucket{
+                root: 0,
+                sequence: 0,
+            }),
+            Rc::new(RefCell::new(tx)),
+        );
+
+        let n = Rc::new(RefCell::new(Node::new(Rc::new(RefCell::new(bucket)))));
+        n.borrow_mut().weak_self = Rc::downgrade(&n);
+        n.borrow_mut().put("00000001", "00000001", Some("0123456701234567"), 0, 0);
+        n.borrow_mut().put("00000002", "00000002", Some("0123456701234567"), 0, 0);
+        n.borrow_mut().put("00000003", "00000003", Some("0123456701234567"), 0, 0);
+        n.borrow_mut().put("00000004", "00000004", Some("0123456701234567"), 0, 0);
+        n.borrow_mut().put("00000005", "00000005", Some("0123456701234567"), 0, 0);
+
+        // Split between 2 & 3
+        n.borrow_mut().split(100);
+
+        let n_borrow = n.borrow();
+        match n_borrow.parent {
+            None => assert!(false),
+            Some(ref p) => {
+                let p_borrow = p.borrow();
+                let children_borrow = p_borrow.children.borrow();
+                assert_eq!(children_borrow.len(), 2);
+
+
+                {
+                    let child1 = children_borrow[0].upgrade().unwrap();
+                    assert_eq!(child1.borrow().inodes.len(), 2);
+                    let child2 = children_borrow[1].upgrade().unwrap();
+                    assert_eq!(child2.borrow().inodes.len(), 2);
+                }
+            }
+        }
     }
 }
