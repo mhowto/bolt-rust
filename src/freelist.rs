@@ -140,6 +140,68 @@ impl FreeList {
             self.cache.insert(id);
         }
     }
+
+    // release moves all page ids for a transaction id (or older) to the freelist.
+    pub fn release(&mut self, txid: txid_t) {
+        let mut m: Vec<pgid_t> = Vec::new();
+        self.pending.retain(|tid, ids| {
+            if *tid <= txid {
+                m.append(&mut ids.to_vec());
+                return true;
+            }
+            false
+        });
+
+        m.sort();
+        let mut new_ids: Vec<pgid_t> = Vec::with_capacity(self.ids.len() + m.len());
+        merge_pgids(&mut new_ids, &self.ids, &m);
+        self.ids = new_ids;
+    }
+
+    // rollback removes the pages from a given pending tx.
+    pub fn rollback(&mut self, txid: txid_t) {
+        // Remove page ids from cache.
+        for id in &self.pending[&txid] {
+            self.cache.remove(id);
+        }
+
+        // Remove pages from pending list
+        self.pending.remove(&txid);
+    }
+
+    // freed returns whether a given page is in the free list
+    pub fn freed(&self, pgid: pgid_t) -> bool {
+        self.cache.contains(&pgid)
+    }
+
+    // read initializes the freelist from a freelist page.
+    pub fn read(&mut self, p: &Page) {
+        // If the page.count is at the max uint16 value (64k) then it's considered
+        // an overflow and the size of the freelist is stored as the first element.
+        let mut idx: usize = 0;
+        let mut count: u16 = p.count;
+        if count == 0xFFFF {
+            idx = 1;
+            count = 1;
+        }
+
+        // Copy the list of page ids from the freelist
+
+        // Rebuild the page cache.
+        unimplemented!();
+    }
+
+    pub fn write(&self, p: &mut Page) {
+        unimplemented!();
+    }
+
+    pub fn reload(&mut self, p: &Page) {
+        unimplemented!();
+    }
+
+    pub fn reindex(&mut self) {
+        unimplemented!();
+    }
 }
 
 #[cfg(test)]
@@ -180,7 +242,6 @@ mod tests {
 
     #[test]
     fn freelist_allocate() {
-//        let mut f = FreeList::new();
         let mut f = FreeList {
             ids: vec![3,4,5,6,7,9,12,13,18],
             pending: HashMap::new(),
