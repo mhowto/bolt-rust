@@ -1,3 +1,6 @@
+#![plugin(quickcheck_macros)]
+
+
 use types::pgid_t;
 use std::mem;
 use std::slice;
@@ -18,7 +21,6 @@ pub const FREELIST_PAGE_FLAG: u16 = 0x10;
 pub const MIN_KEYS_PER_PAGE: i32 = 2;
 pub const BRANCH_PAGE_ELEMENT_SIZE: usize = mem::size_of::<BranchPageElement>();
 pub const LEAF_PAGE_ELEMENT_SIZE: usize = mem::size_of::<LeafPageElement>();
-
 
 static mut PAGE_HEADER_SIZE: usize = 0;
 static INIT: Once = ONCE_INIT;
@@ -160,6 +162,61 @@ impl<'a> LeafPageElement {
     }
 }
 
+// merge_pgids copies the sorted union of a and b into dst.
+// If dst is too small, it panics
+pub fn merge_pgids(dst: &mut Vec<pgid_t>, a: &Vec<pgid_t>, b: &Vec<pgid_t>) {
+    // TODO: capacity -> len()
+    if dst.capacity() < a.len() + b.len() {
+        panic!("merge_pgids bad len {} < {} + {}", dst.len(), a.len(), b.len());
+    }
+
+    // Copy in the opposite slice if one is nil.
+    if a.len() == 0 {
+        let mut copy_a = a.to_vec();
+        dst.append(&mut copy_a);
+    }
+
+    if b.len() == 0 {
+        let mut copy_b = b.to_vec();
+        dst.append(&mut copy_b);
+    }
+
+    // Merged will hold all elements from both lists.
+    let mut lead = a.as_slice();
+    let mut follow = b.as_slice();
+    if b[0] < a[0] {
+        lead = b.as_slice();
+        follow = a.as_slice();
+    }
+
+    // Continue while there are elements in the lead.
+    while lead.len() >0 {
+        // Merge largest prefix of lead that is ahead of follow[0].
+        let result = lead.binary_search(&follow[0]);
+        let n = match result {
+            Ok(nn) => nn,
+            Err(nn) => nn,
+        };
+        let mut merged_copy = lead[..n].to_vec();
+        dst.append(&mut merged_copy);
+        if n >= lead.len() {
+            break;
+        }
+
+        // Swap lead and follow.
+        let mut temp = &lead[n..];
+        lead = follow;
+        follow = temp;
+    }
+
+    // Append what's left in follow.
+    let mut merged_copy = follow.to_vec();
+    dst.append(&mut merged_copy);
+}
+
+#[cfg(test)]
+extern crate quickcheck;
+
 #[cfg(test)]
 mod tests {
     use page;
@@ -247,4 +304,58 @@ mod tests {
             // }
         }
     }
+
+    #[test]
+    fn pgids_merge() {
+        {
+            let a: Vec<pgid_t> = vec![4, 5, 6, 10, 11, 12, 13, 27];
+            let b: Vec<pgid_t> = vec![1, 3, 8, 9, 25, 30];
+            let mut c: Vec<pgid_t> = Vec::with_capacity(a.len() + b.len());
+            page::merge_pgids(&mut c, &a, &b);
+            assert_eq!(c, vec![1, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 25, 27, 30]);
+        }
+
+        {
+            let a: Vec<pgid_t> = vec![4, 5, 6, 10, 11, 12, 13, 27, 35, 36];
+            let b: Vec<pgid_t> = vec![8, 9, 25, 30];
+            let mut c: Vec<pgid_t> = Vec::with_capacity(a.len() + b.len());
+            page::merge_pgids(&mut c, &a, &b);
+            assert_eq!(c, vec![4, 5, 6, 8, 9, 10, 11, 12, 13, 25, 27, 30, 35, 36]);
+        }
+    }
+
+    fn reverse<T: Clone>(xs: &[T]) -> Vec<T> {
+        let mut rev = vec!();
+        for x in xs {
+            rev.insert(0, x.clone())
+        }
+        rev
+    }
+
+    #[quickcheck]
+    fn double_reversal_is_identity(xs: Vec<isize>) -> bool {
+        xs != reverse(&reverse(&xs))
+    }
+
+    /*
+    #[quickcheck]
+    fn pgids_merge_quick(a: Vec<pgid_t>, b: Vec<pgid_t>) -> bool {
+
+        let mut a_mut = a.to_vec();
+        let mut b_mut = b.to_vec();
+        a_mut.sort();
+        b_mut.sort();
+
+        println!("a: {:?}", a_mut.to_vec());
+        println!("b: {:?}", b_mut.to_vec());
+
+        let mut c = Vec::with_capacity(a.len() + b.len());
+        page::merge_pgids(&mut c, &a_mut, &b_mut);
+        println!("c: {:?}", c.to_vec());
+
+        a_mut.append(&mut b_mut);
+        a_mut.sort();
+        c == a_mut
+    }
+    */
 }

@@ -32,7 +32,7 @@ impl Tx {
     // If the page is already free then a panic will occur.
     pub fn free(&self, pgid: pgid_t) {
         let db_borrow = self.db.borrow_mut();
-        let freelist_borrow = db_borrow.freelist.borrow_mut();
+        let mut freelist_borrow = db_borrow.freelist.borrow_mut();
 
         freelist_borrow.free(self.meta.pgid, Rc::clone(&self.page(pgid)));
     }

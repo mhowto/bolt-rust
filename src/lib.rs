@@ -1,9 +1,10 @@
 #![feature(const_fn, const_size_of)]
+#![feature(custom_attribute)]
+#![feature(plugin)]
 
 // Re-export core for use by macros
 #[doc(hidden)]
 pub extern crate core as __core;
-
 
 #[macro_use]
 mod macros;
