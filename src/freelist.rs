@@ -1,9 +1,10 @@
 use types::{txid_t, pgid_t};
-use page::{Page, get_page_header_size, merge_pgids};
+use page::{Page, get_page_header_size, merge_pgids, FREELIST_PAGE_FLAG};
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::mem;
+use std::slice;
 
 // FreeList represents a list of all pages that are available for allocation.
 // It also tracks pages that have been freed but are still in use by open transactions.
@@ -127,17 +128,20 @@ impl FreeList {
             self.pending.insert(txid, Vec::new());
         }
         let ids_option = self.pending.get_mut(&txid);
-        let ids = ids_option.unwrap();
+        match ids_option {
+            None => panic!("pending should not be None"),
+            Some(ids) => {
+                for id in pgid..pgid + 1 + p.borrow().overflow as pgid_t {
+                    // Verify that page is not already free.
+                    if self.cache.contains(&id) {
+                        panic!("page {} already freed")
+                    }
 
-        for id in pgid..pgid+1+p.borrow().overflow as pgid_t {
-            // Verify that page is not already free.
-            if self.cache.contains(&id) {
-                panic!("page {} already freed")
-            }
-
-            // Add to the freelist and cache.
-            ids.push(id);
-            self.cache.insert(id);
+                    // Add to the freelist and cache.
+                    ids.push(id);
+                    self.cache.insert(id);
+                }
+            },
         }
     }
 
@@ -179,28 +183,105 @@ impl FreeList {
         // If the page.count is at the max uint16 value (64k) then it's considered
         // an overflow and the size of the freelist is stored as the first element.
         let mut idx: usize = 0;
-        let mut count: u16 = p.count;
+        let mut count: usize = p.count as usize;
         if count == 0xFFFF {
             idx = 1;
-            count = 1;
+            let pgid_ptr = &p.ptr as *const usize as *const pgid_t;
+            count = unsafe { (*pgid_ptr) as usize };
         }
 
         // Copy the list of page ids from the freelist
+        if count == 0 {
+            self.ids.clear();
+        } else {
+            let pgid_ptr = &p.ptr as *const usize as *const pgid_t;
+            self.ids.reserve(count - idx + 1);
+            let mut pgids_slice = unsafe {
+                slice::from_raw_parts(pgid_ptr.offset(idx as isize), count)
+            };
+            self.ids.append(&mut pgids_slice.to_vec());
+
+            // Make sure they're sorted.
+            self.ids.sort();
+        }
 
         // Rebuild the page cache.
-        unimplemented!();
+        self.reindex();
     }
 
+    // writes the page ids onto a freelist page. All free and pending ids are
+    // saved to disk since in the event of a program crash, all pending ids will
+    // become free.
     pub fn write(&self, p: &mut Page) {
-        unimplemented!();
+        // Combine the old free pgids and pgids waiting on an open transaction.
+
+        // Update the header flag.
+        p.flags |= FREELIST_PAGE_FLAG;
+
+        // The page.count can only hold up to 64k elementes so if we overflow that
+        // number then we handle it by putting the size in the first element.
+        let lenids = self.count();
+        if lenids == 0 {
+            p.count = lenids as u16;
+        } else if lenids < 0xFFFF {
+            p.count = lenids as u16;
+            let pgid_ptr = &mut p.ptr as *mut usize as *mut pgid_t;
+            let mut dst = unsafe {
+                Vec::from_raw_parts(pgid_ptr, lenids, lenids)
+            };
+            self.copyall(&mut dst);
+        } else {
+            p.count = 0xFFFF;
+            let pgid_ptr = &mut p.ptr as *mut usize as *mut pgid_t;
+            unsafe {*pgid_ptr = lenids as u64;}
+            let mut dst = unsafe {
+                Vec::from_raw_parts(pgid_ptr.offset(1), lenids, lenids)
+            };
+            self.copyall(&mut dst);
+        }
     }
 
+    // reload reads the freelist from a page and filters out pending items.
     pub fn reload(&mut self, p: &Page) {
-        unimplemented!();
+        self.read(p);
+
+        // Build a cache of only pending pages.
+        let mut pcache: HashSet<pgid_t> = HashSet::new();
+
+        for pending_ids in self.pending.values() {
+            for pending_id in pending_ids {
+                pcache.insert(*pending_id);
+            }
+        }
+
+        // Check each page in the freelist and build a new available freelist
+        // with any pages not in the pending lists.
+        let mut a: Vec<pgid_t> = Vec::new();
+        for id in &self.ids {
+            if !pcache.contains(id) {
+                a.push(*id);
+            }
+        }
+        self.ids = a;
+
+        // Once the available list is rebuilt then rebuild the free cache so that
+        // it includes the available and pending free pages.
+        self.reindex();
     }
 
+    // reindex rebuilds the free cache based on available and pending free lists.
     pub fn reindex(&mut self) {
-        unimplemented!();
+        self.cache.clear();
+        self.cache.reserve(self.ids.len());
+        for id in &self.ids {
+            self.cache.insert(*id);
+        }
+
+        for pending_ids in self.pending.values() {
+            for pending_id in pending_ids {
+                self.cache.insert(*pending_id);
+            }
+        }
     }
 }
 
@@ -239,6 +320,46 @@ mod tests {
         f.free(100, Rc::clone(&page));
         assert_eq!(f.pending[&100], vec![12,13,14,15]);
     }
+
+    #[test]
+    fn freelist_release() {
+        let mut f = FreeList::new();
+        let page1 = Rc::new(RefCell::new(Page {
+            id: 12,
+            flags: 0,
+            count: 0,
+            overflow: 1,
+            ptr: 0,
+        }));
+        f.free(100, Rc::clone(&page1));
+
+        let page2 = Rc::new(RefCell::new(Page {
+            id: 9,
+            flags: 0,
+            count: 0,
+            overflow: 0,
+            ptr: 0,
+        }));
+        f.free(100, Rc::clone(&page2));
+
+        let page3 = Rc::new(RefCell::new(Page {
+            id: 30,
+            flags: 0,
+            count: 0,
+            overflow: 0,
+            ptr: 0,
+        }));
+        f.free(102, Rc::clone(&page3));
+
+        f.release(100);
+        f.release(101);
+        assert_eq!(f.ids, vec![9,12,13]);
+
+        f.release(102);
+        assert_eq!(f.ids, vec![9,12,13, 39]);
+
+    }
+
 
     #[test]
     fn freelist_allocate() {

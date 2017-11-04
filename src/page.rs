@@ -174,11 +174,13 @@ pub fn merge_pgids(dst: &mut Vec<pgid_t>, a: &Vec<pgid_t>, b: &Vec<pgid_t>) {
     if a.len() == 0 {
         let mut copy_a = a.to_vec();
         dst.append(&mut copy_a);
+        return;
     }
 
     if b.len() == 0 {
         let mut copy_b = b.to_vec();
         dst.append(&mut copy_b);
+        return;
     }
 
     // Merged will hold all elements from both lists.
