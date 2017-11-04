@@ -7,6 +7,7 @@ use std::slice;
 use std::fmt;
 use meta::Meta;
 use std::sync::{Once, ONCE_INIT};
+use std::ptr;
 
 pub const MAX_PAGE_SIZE: usize = 0x7FFFFFF;
 pub const MAX_ALLOC_SIZE: usize = 0x7FFFFFFF;
@@ -162,6 +163,63 @@ impl<'a> LeafPageElement {
     }
 }
 
+pub fn merge_pgids_raw(dst: *mut pgid_t, a: &Vec<pgid_t>, b: &Vec<pgid_t>) {
+    // Copy in the opposite slice if one is nil.
+    if a.len() == 0 {
+        let mut copy_a = b.to_vec();
+        unsafe {
+            ptr::copy(copy_a.as_mut_ptr(), dst, copy_a.len());
+        }
+        return;
+    }
+
+    if b.len() == 0 {
+        let mut copy_b = a.to_vec();
+        unsafe {
+            ptr::copy(copy_b.as_mut_ptr(), dst, copy_b.len());
+        }
+        return;
+    }
+
+    // Merged will hold all elements from both lists.
+    let mut lead = a.as_slice();
+    let mut follow = b.as_slice();
+    if b[0] < a[0] {
+        lead = b.as_slice();
+        follow = a.as_slice();
+    }
+
+    // Continue while there are elements in the lead.
+    let mut copyed_size: usize = 0;
+    while lead.len() >0 {
+        // Merge largest prefix of lead that is ahead of follow[0].
+        let result = lead.binary_search(&follow[0]);
+        let n = match result {
+            Ok(nn) => nn,
+            Err(nn) => nn,
+        };
+        let mut merged_copy = lead[..n].to_vec();
+        unsafe {
+            ptr::copy(merged_copy.as_mut_ptr(), dst.offset(copyed_size as isize), merged_copy.len());
+        }
+        copyed_size  += merged_copy.len();
+        if n >= lead.len() {
+            break;
+        }
+
+        // Swap lead and follow.
+        let mut temp = &lead[n..];
+        lead = follow;
+        follow = temp;
+    }
+
+    // Append what's left in follow.
+    let mut merged_copy = follow.to_vec();
+    unsafe {
+        ptr::copy(merged_copy.as_mut_ptr(), dst.offset(copyed_size as isize), merged_copy.len());
+    }
+}
+
 // merge_pgids copies the sorted union of a and b into dst.
 // If dst is too small, it panics
 pub fn merge_pgids(dst: &mut Vec<pgid_t>, a: &Vec<pgid_t>, b: &Vec<pgid_t>) {
@@ -172,13 +230,13 @@ pub fn merge_pgids(dst: &mut Vec<pgid_t>, a: &Vec<pgid_t>, b: &Vec<pgid_t>) {
 
     // Copy in the opposite slice if one is nil.
     if a.len() == 0 {
-        let mut copy_a = a.to_vec();
+        let mut copy_a = b.to_vec();
         dst.append(&mut copy_a);
         return;
     }
 
     if b.len() == 0 {
-        let mut copy_b = b.to_vec();
+        let mut copy_b = a.to_vec();
         dst.append(&mut copy_b);
         return;
     }

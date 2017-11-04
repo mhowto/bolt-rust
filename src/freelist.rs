@@ -1,5 +1,5 @@
 use types::{txid_t, pgid_t};
-use page::{Page, get_page_header_size, merge_pgids, FREELIST_PAGE_FLAG};
+use page::{Page, get_page_header_size, merge_pgids, merge_pgids_raw, FREELIST_PAGE_FLAG};
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -51,7 +51,7 @@ impl FreeList {
 
     // copyall copies into dst a list of all free ids and all pending ids in one sorted list.
     // f.count returns the minimum length required for dst.
-    pub fn copyall(&self, dst: &mut Vec<pgid_t>) {
+    pub fn copyall(&self, dst: *mut pgid_t) {
         let mut m = Vec::with_capacity(self.pending_count());
 
         for (_, list) in self.pending.iter() {
@@ -59,7 +59,7 @@ impl FreeList {
             m.append(&mut copy_list);
         }
         m.sort();
-        merge_pgids(dst, &self.ids, &m);
+        merge_pgids_raw(dst, &self.ids, &m);
     }
 
     // allocate returns the starting page id of a contiguous list of pages of a given size.
@@ -151,9 +151,9 @@ impl FreeList {
         self.pending.retain(|tid, ids| {
             if *tid <= txid {
                 m.append(&mut ids.to_vec());
-                return true;
+                return false;
             }
-            false
+            true
         });
 
         m.sort();
@@ -195,7 +195,7 @@ impl FreeList {
             self.ids.clear();
         } else {
             let pgid_ptr = &p.ptr as *const usize as *const pgid_t;
-            self.ids.reserve(count - idx + 1);
+            self.ids.reserve(count - idx);
             let mut pgids_slice = unsafe {
                 slice::from_raw_parts(pgid_ptr.offset(idx as isize), count)
             };
@@ -225,19 +225,23 @@ impl FreeList {
             p.count = lenids as u16;
         } else if lenids < 0xFFFF {
             p.count = lenids as u16;
-            let pgid_ptr = &mut p.ptr as *mut usize as *mut pgid_t;
+            let mut pgid_ptr = &mut p.ptr as *mut usize as *mut pgid_t;
+            /*
             let mut dst = unsafe {
-                Vec::from_raw_parts(pgid_ptr, lenids, lenids)
+                Vec::from_raw_parts(pgid_ptr, 0, lenids)
             };
-            self.copyall(&mut dst);
+            */
+            self.copyall(pgid_ptr);
         } else {
             p.count = 0xFFFF;
-            let pgid_ptr = &mut p.ptr as *mut usize as *mut pgid_t;
+            let mut pgid_ptr = &mut p.ptr as *mut usize as *mut pgid_t;
             unsafe {*pgid_ptr = lenids as u64;}
+            /*
             let mut dst = unsafe {
-                Vec::from_raw_parts(pgid_ptr.offset(1), lenids, lenids)
+                Vec::from_raw_parts(pgid_ptr.offset(1), 0, lenids)
             };
-            self.copyall(&mut dst);
+            */
+            self.copyall(unsafe {pgid_ptr.offset(1)});
         }
     }
 
@@ -290,8 +294,9 @@ mod tests {
     use freelist::FreeList;
     use std::rc::Rc;
     use std::cell::RefCell;
-    use page::Page;
+    use page::{Page, FREELIST_PAGE_FLAG};
     use std::collections::{HashMap, HashSet};
+    use types::pgid_t;
 
     #[test]
     fn freelist_free() {
@@ -343,7 +348,7 @@ mod tests {
         f.free(100, Rc::clone(&page2));
 
         let page3 = Rc::new(RefCell::new(Page {
-            id: 30,
+            id: 39,
             flags: 0,
             count: 0,
             overflow: 0,
@@ -359,7 +364,6 @@ mod tests {
         assert_eq!(f.ids, vec![9,12,13, 39]);
 
     }
-
 
     #[test]
     fn freelist_allocate() {
@@ -382,5 +386,61 @@ mod tests {
         assert_eq!(f.allocate(1), 18);
         assert_eq!(f.allocate(1), 0);
         assert_eq!(f.ids, vec![]);
+    }
+
+    #[test]
+    fn freelist_read() {
+        // Create a page.
+        let mut buf: [u8; 4096] = [0; 4096];
+        let page: *mut Page = buf.as_mut_ptr() as *mut Page;
+        unsafe {
+            (*page).flags = FREELIST_PAGE_FLAG;
+            (*page).count = 2;
+        }
+
+        // Insert 2 page ids
+        let ids_ptr: *mut pgid_t = unsafe {
+            &mut (*page).ptr as *mut usize as *mut pgid_t
+        };
+        unsafe {
+            *ids_ptr = 23;
+            *ids_ptr.offset(1) = 50;
+        }
+
+        // Deserialize page into a freelist.
+        let mut f = FreeList::new();
+        unsafe {
+            f.read(&(*page));
+        }
+
+        // Ensure that there are two page ids in the freelist.
+        assert_eq!(f.ids, vec![23, 50]);
+    }
+
+    #[test]
+    fn freelist_write() {
+        // Create a freelist and write it to a page.
+        let mut buf: [u8; 4096] = [0; 4096];
+        let page: *mut Page = buf.as_mut_ptr() as *mut Page;
+        let mut f = FreeList {
+            ids: vec![12, 39],
+            pending: HashMap::new(),
+            cache: HashSet::new(),
+        };
+        f.pending.insert(100, vec![28, 11]);
+        f.pending.insert(101, vec![3]);
+
+        unsafe { f.write(page.as_mut().unwrap()); };
+
+        // Read the page back out
+        let mut f2 = FreeList::new();
+        let p_const = page as *const Page;
+        unsafe {
+            f2.read(&(*p_const));
+        }
+
+        // Ensure that the freelist is correct.
+        // All pages should be present and in reverse order.
+        assert_eq!(f2.ids, vec![3, 11, 12, 28, 39]);
     }
 }
