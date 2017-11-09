@@ -1,6 +1,9 @@
 #![feature(const_fn, const_size_of)]
 #![feature(custom_attribute)]
 #![feature(plugin)]
+#![feature(test)]
+
+extern crate test;
 
 // Re-export core for use by macros
 #[doc(hidden)]

@@ -297,6 +297,9 @@ mod tests {
     use page::{Page, FREELIST_PAGE_FLAG};
     use std::collections::{HashMap, HashSet};
     use types::pgid_t;
+    use test::Bencher;
+
+    extern crate rand;
 
     #[test]
     fn freelist_free() {
@@ -442,5 +445,45 @@ mod tests {
         // Ensure that the freelist is correct.
         // All pages should be present and in reverse order.
         assert_eq!(f2.ids, vec![3, 11, 12, 28, 39]);
+    }
+
+    #[bench]
+    fn bench_freelis_release_10k(b: &mut Bencher) {
+        bench_freelist_release(b, 10000);
+    }
+
+    #[bench]
+    fn bench_freelis_release_100k(b: &mut Bencher) {
+        bench_freelist_release(b, 100000);
+    }
+
+    #[bench]
+    fn bench_freelis_release_1000k(b: &mut Bencher) {
+        bench_freelist_release(b, 1000000);
+    }
+
+    #[bench]
+    fn bench_freelis_release_10000k(b: &mut Bencher) {
+        bench_freelist_release(b, 10000000);
+    }
+
+    fn bench_freelist_release(b: &mut Bencher, size: usize) {
+        let ids = random_pgids(size);
+        let pending = random_pgids(ids.len() / 400);
+        b.iter(|| {
+            let mut f = FreeList::new();
+            f.ids.append(&mut ids.to_vec());
+            f.pending.insert(1, pending.to_vec());
+            f.release(1)
+        });
+    }
+
+    fn random_pgids(n: usize) -> Vec<pgid_t> {
+        let mut result: Vec<pgid_t> = Vec::with_capacity(n);
+
+        for i in 0..n {
+            result.push(rand::random::<pgid_t>());
+        }
+        result
     }
 }
