@@ -7,6 +7,7 @@ use std::rc::Rc;
 use std::cell::RefCell;
 
 pub struct Tx {
+    pub writable: bool,
     pub meta: Meta,
     pub stats: TxStats,
     pub db: Rc<RefCell<DB>>
@@ -15,6 +16,7 @@ pub struct Tx {
 impl Tx {
     pub fn new(db: &Rc<RefCell<DB>>) -> Tx {
         Tx {
+            writable: false,
             meta: Meta::new(),
             stats: TxStats::new(),
             db: Rc::clone(db),
