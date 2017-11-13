@@ -1,10 +1,13 @@
 use types::pgid_t;
 use tx::Tx;
 use node::Node;
+use cursor::Cursor;
+
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use page::Page;
+use std::rc::Weak;
 
 // MAX_KEY_SIZE is the maximum length of a key, in bytes
 pub const MAX_KEY_SIZE: u32 = 32768;
@@ -33,19 +36,27 @@ pub struct Bucket<'a> {
     //
     // This is non-persisted across transactions so it must be set in every Tx.
     pub fill_percent: f32,
+    pub weak_self: Weak<RefCell<Bucket<'a>>>, // weak pointer to self
 }
 
 impl<'a> Bucket<'a> {
-    pub fn new(b: Box<_Bucket>, tx: Rc<RefCell<Tx>>) -> Bucket<'a> {
+    pub fn new(b: Box<_Bucket>, tx: &Rc<RefCell<Tx>>) -> Bucket<'a> {
         Bucket {
             bucket: b,
-            tx: tx,
+            tx: Rc::clone(tx),
             buckets: HashMap::new(),
             page: None,
             root_node: None,
             nodes: HashMap::new(),
             fill_percent: 0.0,
+            weak_self: Weak::new(),
         }
+    }
+
+    pub fn new_rc_refcell(b: Box<_Bucket>, tx: &Rc<RefCell<Tx>>) -> Rc<RefCell<Bucket<'a>>> {
+        let b = Rc::new(RefCell::new(Bucket::new(b, tx)));
+        b.borrow_mut().weak_self = Rc::downgrade(&b);
+        b
     }
 
     // node creates a node from a page and associates it with a given parent.
@@ -53,15 +64,16 @@ impl<'a> Bucket<'a> {
         &mut self,
         pgid: pgid_t,
         parent: Option<Rc<RefCell<Node<'a>>>>,
-        bucket: &Rc<RefCell<Bucket<'a>>>,
     ) -> Rc<RefCell<Node<'a>>> {
         // Retrieve node if it's already been created.
-        if let Some(n) = self.nodes.get(&pgid) {
-            return Rc::clone(&n);
+        if let Some(ref n) = self.nodes.get(&pgid) {
+            return Rc::clone(n);
         }
 
         // Otherwise create a node and cache it.
-        let n = Rc::new(RefCell::new(Node::new(Rc::clone(bucket))));
+        let n = Rc::new(RefCell::new(
+            Node::new(Rc::clone(&self.weak_self.upgrade().unwrap()))
+        ));
 
         if let Some(ref p) = parent {
             let mut parent_node = p.borrow_mut();
@@ -70,6 +82,7 @@ impl<'a> Bucket<'a> {
         } else {
             self.root_node = Some(Rc::clone(&n));
         }
+
         // use the inline page if this is an inline bucket.
         let p = &mut self.page;
         if p.is_none() {
@@ -81,18 +94,18 @@ impl<'a> Bucket<'a> {
         self.nodes.insert(pgid, Rc::clone(&n));
 
         // Update statistics
-        unimplemented!();
+        self.tx.borrow_mut().stats.node_count += 1;
 
         n
     }
 
-    pub fn tx(&self) -> Rc<RefCell<Tx>> {
-        Rc::clone(&self.tx)
+    pub fn tx(&self) -> &Rc<RefCell<Tx>> {
+        &self.tx
     }
 
     // returns the root of the bucket
     pub fn root(&self) -> pgid_t {
-        unimplemented!();
+        self.bucket.root
     }
 
     pub fn writable(&self) -> bool {
@@ -102,8 +115,12 @@ impl<'a> Bucket<'a> {
     // creates a cursor associated with the bucket.
     // The cursor is only valid as long as the transaction is open.
     // Do not use a cursor after the transaction is closed.
-    pub fn cursor(&self) {
-        unimplemented!();
+    pub fn cursor(&mut self) -> Rc<RefCell<Cursor<'a>>> {
+        // update transaction statistics.
+        self.tx.borrow_mut().stats.cursor_count += 1;
+
+        // Allocate and return a cursor.
+        Rc::new(RefCell::new(Cursor::new(&self.weak_self.upgrade().unwrap())))
     }
 
     // Bucket retrieves a nested bucket by name.

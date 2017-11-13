@@ -117,7 +117,6 @@ impl<'a> Node<'a> {
         self.bucket.borrow_mut().node(
             self.inodes[index].pgid,
             Some(self.to_rc_refcell_node()),
-            &self.bucket,
         )
     }
 
@@ -744,7 +743,7 @@ mod tests {
                 root: 0,
                 sequence: 0,
             }),
-            Rc::new(RefCell::new(Tx::new(&db))),
+            &Rc::new(RefCell::new(Tx::new(&db))),
         )));
         let mut node = Node::new(Rc::clone(&bucket));
         node.put("baz", "baz", Some("2"), 0, 0);
@@ -823,7 +822,7 @@ mod tests {
                 root: 0,
                 sequence: 0,
             }),
-            Rc::new(RefCell::new(Tx::new(&db))),
+            &Rc::new(RefCell::new(Tx::new(&db))),
         ))));
         unsafe { n.read(page.as_mut().unwrap()); }
 
@@ -847,7 +846,7 @@ mod tests {
                 root: 0,
                 sequence: 0,
             }),
-            Rc::new(RefCell::new(tx)),
+            &Rc::new(RefCell::new(tx)),
         );
 
         let mut n = Node::new(Rc::new(RefCell::new(bucket)));
@@ -868,7 +867,7 @@ mod tests {
                 root: 0,
                 sequence: 0,
             }),
-            Rc::new(RefCell::new(Tx::new(&db))),
+            &Rc::new(RefCell::new(Tx::new(&db))),
         ))));
         unsafe { n2.read(page.as_mut().unwrap()); }
 
@@ -898,7 +897,7 @@ mod tests {
                 root: 0,
                 sequence: 0,
             }),
-            Rc::new(RefCell::new(tx)),
+            &Rc::new(RefCell::new(tx)),
         );
 
         let n = Rc::new(RefCell::new(Node::new(Rc::new(RefCell::new(bucket)))));
@@ -946,7 +945,7 @@ mod tests {
                 root: 0,
                 sequence: 0,
             }),
-            Rc::new(RefCell::new(tx)),
+            &Rc::new(RefCell::new(tx)),
         );
 
         let n = Rc::new(RefCell::new(Node::new(Rc::new(RefCell::new(bucket)))));
@@ -974,7 +973,7 @@ mod tests {
                 root: 0,
                 sequence: 0,
             }),
-            Rc::new(RefCell::new(tx)),
+            &Rc::new(RefCell::new(tx)),
         );
 
         let n = Rc::new(RefCell::new(Node::new(Rc::new(RefCell::new(bucket)))));

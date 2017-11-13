@@ -1,6 +1,5 @@
 #![feature(const_fn, const_size_of)]
-#![feature(custom_attribute)]
-#![feature(plugin)]
+#![feature(custom_attribute)] #![feature(plugin)]
 #![feature(test)]
 
 extern crate test;
@@ -16,6 +15,7 @@ mod macros;
 // extern crate memoffset;
 
 mod bucket;
+mod cursor;
 mod node;
 mod types;
 mod tx;
