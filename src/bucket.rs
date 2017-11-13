@@ -2,11 +2,11 @@ use types::pgid_t;
 use tx::Tx;
 use node::Node;
 use cursor::Cursor;
+use page::{Page, BUCKET_LEAF_FLAG};
 
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use page::Page;
 use std::rc::Weak;
 
 // MAX_KEY_SIZE is the maximum length of a key, in bytes
@@ -25,7 +25,7 @@ pub const DEFAULT_FILL_PERCENT: f32 = 0.5;
 pub struct Bucket<'a> {
     pub bucket: Box<_Bucket>,
     pub tx: Rc<RefCell<Tx>>,                           // the associated transcation
-    buckets: HashMap<&'static str, Bucket<'a>>,        // subbucket cache
+    buckets: HashMap<&'static str, Rc<RefCell<Bucket<'a>>>>,        // subbucket cache
     page: Option<Rc<RefCell<Page>>>,                   // inline page reference
     pub root_node: Option<Rc<RefCell<Node<'a>>>>,      // materialized node for the root page.
     pub nodes: HashMap<pgid_t, Rc<RefCell<Node<'a>>>>, // node cache
@@ -126,13 +126,46 @@ impl<'a> Bucket<'a> {
     // Bucket retrieves a nested bucket by name.
     // Returns nil if the bucket does not exist.
     // The bucket instance is only valid for the lifetime of the transaction.
-    pub fn bucket(&self, name: &'static str) -> Option<Bucket> {
-        unimplemented!();
+    pub fn bucket(&mut self, name: &'static str) -> Option<Rc<RefCell<Bucket<'a>>>> {
+        match self.buckets.get(name) {
+            Some(ref b) => return Some(Rc::clone(b)),
+            None => (),
+        }
+
+        // Move cursor to key
+        let c = self.cursor();
+        let (k, v, flags) = c.borrow().seek1(name);
+
+        // Return nil if the key doesn't exist or it is not a bucket.
+        match k {
+            Some(key) => {
+                if key != name {
+                    return None
+                }
+            },
+            None => return None,
+        }
+        if (flags & BUCKET_LEAF_FLAG as u32) == 0 {
+            return None
+        }
+
+        match v {
+            Some(value) => {
+                match self.open_bucket(value) {
+                    Some(ref child) => {
+                        self.buckets.insert(name, Rc::clone(child));
+                        return Some(Rc::clone(child))
+                    },
+                    None => panic!("failed to create bucket"),
+                }
+            },
+            None => None,
+        }
     }
 
     // Helper method that re-interprets a sub-subcket value
     // from a parent into a bucket.
-    fn open_bucket(&mut self, value: &'static str) -> Option<Bucket> {
+    fn open_bucket(&mut self, value: &'a str) -> Option<Rc<RefCell<Bucket<'a>>>> {
         unimplemented!();
     }
 

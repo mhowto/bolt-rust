@@ -17,6 +17,8 @@ pub const LEAF_PAGE_FLAG: u16 = 0x02;
 pub const META_PAGE_FLAG: u16 = 0x04;
 pub const FREELIST_PAGE_FLAG: u16 = 0x10;
 
+pub const BUCKET_LEAF_FLAG: u16 = 0x01;
+
 // pub const PageHeaderSize: isize = intrusive_collections::offset_of!(page, ptr);
 //pub const PageHeaderSize: isize = offset_of!(page, ptr);
 pub const MIN_KEYS_PER_PAGE: i32 = 2;

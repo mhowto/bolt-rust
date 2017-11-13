@@ -87,7 +87,7 @@ impl<'a> Cursor<'a> {
 
     // seek moves the cursor to a given key and returns it.
     // If the key does not exist then the next key is used.
-    fn _seek(&self, seek: &'a str) -> (Option<&'a str>, Option<&'a str>, u32) {
+    pub fn seek1(&self, seek: &'a str) -> (Option<&'a str>, Option<&'a str>, u32) {
         unimplemented!()
     }
 
